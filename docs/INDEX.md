@@ -184,10 +184,10 @@ twine upload dist/*
 
 ## 📌 Useful Links
 
-- **GitHub**: https://github.com/recruitbase/agentfit
+- **GitHub**: https://github.com/RecruitBase/agentfit
 - **PyPI**: https://pypi.org/project/agentfit
-- **Issues**: https://github.com/recruitbase/agentfit/issues
-- **Discussions**: https://github.com/recruitbase/agentfit/discussions
+- **Issues**: https://github.com/RecruitBase/agentfit/issues
+- **Discussions**: https://github.com/RecruitBase/agentfit/discussions
 
 ## ✅ Checklist for Getting Started
 

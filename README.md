@@ -6,10 +6,10 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
-[![Version](https://img.shields.io/badge/version-0.2.0-orange?style=flat-square)](https://github.com/recruitbase/agentfit/releases)
-[![Tests](https://img.shields.io/github/actions/workflow/status/recruitbase/agentfit/tests.yml?label=tests&style=flat-square)](https://github.com/recruitbase/agentfit/actions)
+[![Version](https://img.shields.io/badge/version-0.2.0-orange?style=flat-square)](https://github.com/RecruitBase/agentfit/releases)
+[![Tests](https://img.shields.io/github/actions/workflow/status/recruitbase/agentfit/tests.yml?label=tests&style=flat-square)](https://github.com/RecruitBase/agentfit/actions)
 [![Code Style: Black](https://img.shields.io/badge/code%20style-black-000000?style=flat-square)](https://github.com/psf/black)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/recruitbase/agentfit/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/RecruitBase/agentfit/pulls)
 [![Made by RecruitBase](https://img.shields.io/badge/made%20by-RecruitBase-6C3BF5?style=flat-square)](https://recruitbase.work)
 
 **Stop trusting raw scores. Start understanding why your agent performs the way it does.**
@@ -509,7 +509,7 @@ RecruitBase's thesis is simple: *the most consequential decisions a team makes d
 The framework is open-source because the problem — how do you know if an AI agent is fit for a specific role? — is one the whole industry needs to solve together.
 
 - Website: [recruitbase.work](https://recruitbase.work)
-- AgentFit issues: [GitHub Issues](https://github.com/recruitbase/agentfit/issues)
+- AgentFit issues: [GitHub Issues](https://github.com/RecruitBase/agentfit/issues)
 - Early access / enterprise: [recruitbase.work](https://recruitbase.work)
 
 ---
@@ -523,7 +523,7 @@ If you use AgentFit in research, please cite:
   title   = {AgentFit: Agent Evaluation and Interpretability Framework},
   author  = {Arnauld, Gabiro N. and RecruitBase Contributors},
   year    = {2025},
-  url     = {https://github.com/recruitbase/agentfit},
+  url     = {https://github.com/RecruitBase/agentfit},
   license = {Apache-2.0}
 }
 ```
@@ -549,6 +549,6 @@ AgentFit is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) fo
 
 <div align="center">
 
-Built with care by **[RecruitBase](https://recruitbase.work)** · Apache 2.0 · [Contribute](https://github.com/recruitbase/agentfit/pulls)
+Built with care by **[RecruitBase](https://recruitbase.work)** · Apache 2.0 · [Contribute](https://github.com/RecruitBase/agentfit/pulls)
 
 </div>

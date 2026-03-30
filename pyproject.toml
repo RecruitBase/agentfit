@@ -139,10 +139,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/recruitbase/agentfit"
+Homepage = "https://github.com/RecruitBase/agentfit"
 Documentation = "https://docs.agentfit.dev"
-Repository = "https://github.com/recruitbase/agentfit"
-"Bug Tracker" = "https://github.com/recruitbase/agentfit/issues"
+Repository = "https://github.com/RecruitBase/agentfit"
+"Bug Tracker" = "https://github.com/RecruitBase/agentfit/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

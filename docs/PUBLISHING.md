@@ -171,7 +171,7 @@ After publishing to PyPI:
 git tag v0.2.0
 git push origin v0.2.0
 
-# Create GitHub release on: https://github.com/recruitbase/agentfit/releases
+# Create GitHub release on: https://github.com/RecruitBase/agentfit/releases
 # Include:
 # - Release notes
 # - Link to PyPI

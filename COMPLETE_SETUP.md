@@ -136,7 +136,7 @@ All dimensions implemented with scoring, sub-metrics, and test scenarios:
 
 ```bash
 # Clone and install
-git clone https://github.com/recruitbase/agentfit.git
+git clone https://github.com/RecruitBase/agentfit.git
 cd agentfit
 pip install -e ".[all]"
 

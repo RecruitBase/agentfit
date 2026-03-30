@@ -17,7 +17,7 @@ We are committed to providing a welcoming and inspiring community for all. Pleas
 
 ```bash
 # Clone the repository
-git clone https://github.com/recruitbase/agentfit.git
+git clone https://github.com/RecruitBase/agentfit.git
 cd agentfit
 
 # Create virtual environment
@@ -420,8 +420,8 @@ pre-commit run --all-files
 
 ## Getting Help
 
-- **Questions**: Create a [GitHub Discussion](https://github.com/recruitbase/agentfit/discussions)
-- **Issues**: Check [existing issues](https://github.com/recruitbase/agentfit/issues)
+- **Questions**: Create a [GitHub Discussion](https://github.com/RecruitBase/agentfit/discussions)
+- **Issues**: Check [existing issues](https://github.com/RecruitBase/agentfit/issues)
 - **Documentation**: See [docs/](docs/) directory
 - **Examples**: See [examples/](examples/) directory
 
