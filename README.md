@@ -12,7 +12,7 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/RecruitBase/agentfit/pulls)
 [![Made by RecruitBase](https://img.shields.io/badge/made%20by-RecruitBase-6C3BF5?style=flat-square)](https://recruitbase.work)
 
-**Stop trusting raw scores. Start understanding why your agent performs the way it does.**
+**Stop trusting the ai agents hype. Objectively evaluate which agent is appropriate for your business needs.**
 
 [Getting Started](#getting-started) · [Why AgentFit](#why-agentfit) · [Dimensions](#evaluation-dimensions) · [Interpretability](#interpretability-layer) · [Scaling](#scaling) · [Docs](docs/) · [Examples](examples/)
 
