@@ -1,15 +1,26 @@
 """
 Multi-Provider LLM Client.
 
-Thin abstraction over OpenAI, Anthropic, and Google SDKs so the
-interpreter can call whichever provider the user configures without
-leaking SDK details into the rest of the codebase.
+Routes interpretation requests to the correct provider backend.
+
+Architecture
+------------
+- OpenAI, first-party SDK                  → _openai_complete()
+- Anthropic, first-party SDK               → _anthropic_complete()
+- Google Gemini, first-party SDK           → _google_complete()
+- Mistral, first-party SDK                 → _mistral_complete()
+- DeepSeek / Qwen / Groq / Together AI /   → _openai_compat_complete()
+  Ollama / openai_compatible                 (openai SDK + custom base_url)
 """
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 from loguru import logger
 
-from agentfit.interpretability.config import InterpretabilityConfig, LLMProvider
+from agentfit.interpretability.config import (
+    InterpretabilityConfig,
+    LLMProvider,
+    OPENAI_COMPATIBLE_PROVIDERS,
+)
 
 
 async def llm_complete(
@@ -23,24 +34,28 @@ async def llm_complete(
     Returns the assistant's text response.
     Raises RuntimeError when the provider SDK is missing or the call fails.
     """
-    model = config.get_model()
+    p = config.provider
 
-    if config.provider == LLMProvider.OPENAI:
-        return await _openai_complete(config.api_key, model, system_prompt, user_prompt, config)
-    elif config.provider == LLMProvider.ANTHROPIC:
-        return await _anthropic_complete(config.api_key, model, system_prompt, user_prompt, config)
-    elif config.provider == LLMProvider.GOOGLE:
-        return await _google_complete(config.api_key, model, system_prompt, user_prompt, config)
+    if p == LLMProvider.OPENAI:
+        return await _openai_complete(config, system_prompt, user_prompt)
+    elif p == LLMProvider.ANTHROPIC:
+        return await _anthropic_complete(config, system_prompt, user_prompt)
+    elif p == LLMProvider.GOOGLE:
+        return await _google_complete(config, system_prompt, user_prompt)
+    elif p == LLMProvider.MISTRAL:
+        return await _mistral_complete(config, system_prompt, user_prompt)
+    elif p in OPENAI_COMPATIBLE_PROVIDERS:
+        return await _openai_compat_complete(config, system_prompt, user_prompt)
     else:
-        raise ValueError(f"Unsupported LLM provider: {config.provider}")
+        raise ValueError(f"Unsupported LLM provider: {p}")
 
+
+# ── OpenAI ────────────────────────────────────────────────────────────────────
 
 async def _openai_complete(
-    api_key: str,
-    model: str,
+    config: InterpretabilityConfig,
     system_prompt: str,
     user_prompt: str,
-    config: InterpretabilityConfig,
 ) -> str:
     try:
         from openai import AsyncOpenAI
@@ -50,13 +65,13 @@ async def _openai_complete(
             "Install it with: pip install agentfit[openai]"
         )
 
-    client = AsyncOpenAI(api_key=api_key)
+    model = config.get_model()
+    client = AsyncOpenAI(api_key=config.api_key)
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-
-    logger.debug(f"Calling OpenAI {model} for interpretation")
+    logger.debug(f"Calling OpenAI {model}")
     response = await client.chat.completions.create(
         model=model,
         messages=messages,
@@ -66,12 +81,12 @@ async def _openai_complete(
     return response.choices[0].message.content or ""
 
 
+# ── Anthropic ─────────────────────────────────────────────────────────────────
+
 async def _anthropic_complete(
-    api_key: str,
-    model: str,
+    config: InterpretabilityConfig,
     system_prompt: str,
     user_prompt: str,
-    config: InterpretabilityConfig,
 ) -> str:
     try:
         from anthropic import AsyncAnthropic
@@ -81,9 +96,9 @@ async def _anthropic_complete(
             "Install it with: pip install agentfit[anthropic]"
         )
 
-    client = AsyncAnthropic(api_key=api_key)
-
-    logger.debug(f"Calling Anthropic {model} for interpretation")
+    model = config.get_model()
+    client = AsyncAnthropic(api_key=config.api_key)
+    logger.debug(f"Calling Anthropic {model}")
     response = await client.messages.create(
         model=model,
         max_tokens=config.max_tokens,
@@ -94,12 +109,12 @@ async def _anthropic_complete(
     return response.content[0].text
 
 
+# ── Google Gemini ─────────────────────────────────────────────────────────────
+
 async def _google_complete(
-    api_key: str,
-    model: str,
+    config: InterpretabilityConfig,
     system_prompt: str,
     user_prompt: str,
-    config: InterpretabilityConfig,
 ) -> str:
     try:
         import google.generativeai as genai
@@ -109,13 +124,10 @@ async def _google_complete(
             "Install it with: pip install agentfit[google]"
         )
 
-    genai.configure(api_key=api_key)
-    gen_model = genai.GenerativeModel(
-        model,
-        system_instruction=system_prompt,
-    )
-
-    logger.debug(f"Calling Google {model} for interpretation")
+    model = config.get_model()
+    genai.configure(api_key=config.api_key)
+    gen_model = genai.GenerativeModel(model, system_instruction=system_prompt)
+    logger.debug(f"Calling Google Gemini {model}")
     response = await gen_model.generate_content_async(
         user_prompt,
         generation_config=genai.GenerationConfig(
@@ -124,3 +136,80 @@ async def _google_complete(
         ),
     )
     return response.text
+
+
+# ── Mistral ───────────────────────────────────────────────────────────────────
+
+async def _mistral_complete(
+    config: InterpretabilityConfig,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    try:
+        from mistralai import Mistral
+    except ImportError:
+        raise RuntimeError(
+            "The 'mistralai' package is required for Mistral interpretation. "
+            "Install it with: pip install agentfit[mistral]"
+        )
+
+    model = config.get_model()
+    client = Mistral(api_key=config.api_key)
+    logger.debug(f"Calling Mistral {model}")
+    response = await client.chat.complete_async(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+    )
+    return response.choices[0].message.content or ""
+
+
+# ── OpenAI-compatible (DeepSeek, Qwen, Groq, Together, Ollama, custom) ────────
+
+async def _openai_compat_complete(
+    config: InterpretabilityConfig,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    """
+    Generic handler for any OpenAI-compatible endpoint.
+
+    Providers covered:
+      deepseek  → https://api.deepseek.com/v1
+      qwen      → https://dashscope.aliyuncs.com/compatible-mode/v1
+      groq      → https://api.groq.com/openai/v1
+      together  → https://api.together.xyz/v1
+      ollama    → http://localhost:11434/v1  (no API key required)
+      openai_compatible → user-supplied base_url
+    """
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        raise RuntimeError(
+            "The 'openai' package is required for OpenAI-compatible providers. "
+            "Install it with: pip install openai"
+        )
+
+    model = config.get_model()
+    base_url = config.get_base_url()
+
+    # Ollama accepts any non-empty string as the api_key
+    api_key = config.api_key or "ollama"
+
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    logger.debug(f"Calling {config.provider.value} ({model}) at {base_url}")
+    response = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+    )
+    return response.choices[0].message.content or ""

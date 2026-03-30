@@ -82,8 +82,8 @@ agentfit evaluate \
   --agent-id "supportbot-v1" \
   --success-rate 0.8 \
   --interpret \
-  --provider openai \
-  --api-key sk-your-key-here \
+  --provider deepseek \
+  --api-key sk-key-goes-here \
   --verbose
 ```
 

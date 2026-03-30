@@ -1,3 +1,17 @@
 agentfit.egg-info
 coco.md
 IMPLEMENTATION_SUMMARY.md
+agentfit/__pycache__/
+tests/__pycache__/
+tests/test_e2e.py
+tests/test_evaluator.py
+tests/test_protocol.py
+tests/test_bnp.py
+tests/test_dimensions.py
+tests/test_adapters.py
+tests/test_e2e.pyc
+tests/test_evaluator.pyc
+tests/test_protocol.pyc
+tests/test_bnp.pyc
+tests/test_dimensions.pyc
+tests/test_adapters.pyc

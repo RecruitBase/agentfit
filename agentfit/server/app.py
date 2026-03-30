@@ -22,12 +22,31 @@ from agentfit.core.dimension import DimensionRegistry
 from agentfit.interpretability.config import InterpretabilityConfig, LLMProvider
 
 
+_VALID_PROVIDERS = [
+    "openai", "anthropic", "google", "mistral",
+    "deepseek", "qwen", "groq", "together", "ollama", "openai_compatible",
+]
+
+
 class InterpretabilityModel(BaseModel):
     """API model for interpretability configuration."""
     enabled: bool = Field(True, description="Enable LLM interpretation")
-    provider: str = Field("openai", description="LLM provider: openai, anthropic, or google")
-    api_key: str = Field(..., description="API key for the LLM provider")
+    provider: str = Field(
+        "openai",
+        description=(
+            "LLM provider. One of: openai, anthropic, google, mistral, "
+            "deepseek, qwen, groq, together, ollama, openai_compatible"
+        ),
+    )
+    api_key: Optional[str] = Field(
+        None,
+        description="API key for the LLM provider. Not required for Ollama.",
+    )
     model: Optional[str] = Field(None, description="Model name (uses provider default if omitted)")
+    base_url: Optional[str] = Field(
+        None,
+        description="Base URL override. Required for openai_compatible; optional for others.",
+    )
     temperature: float = Field(0.3, ge=0.0, le=2.0, description="Generation temperature")
     include_recommendations: bool = Field(True, description="Include actionable recommendations")
 
@@ -210,11 +229,19 @@ def create_app() -> FastAPI:
             # Build interpretability config if provided
             interp_config = None
             if request_data.interpretability:
+                raw_provider = request_data.interpretability.provider.lower()
+                if raw_provider not in _VALID_PROVIDERS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid interpretability provider '{raw_provider}'. "
+                               f"Valid options: {', '.join(_VALID_PROVIDERS)}",
+                    )
                 interp_config = InterpretabilityConfig(
                     enabled=request_data.interpretability.enabled,
-                    provider=LLMProvider(request_data.interpretability.provider.lower()),
+                    provider=LLMProvider(raw_provider),
                     api_key=request_data.interpretability.api_key,
                     model=request_data.interpretability.model,
+                    base_url=request_data.interpretability.base_url,
                     temperature=request_data.interpretability.temperature,
                     include_recommendations=request_data.interpretability.include_recommendations,
                 )

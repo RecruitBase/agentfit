@@ -92,23 +92,45 @@ def main():
 )
 @click.option(
     "--provider",
-    type=click.Choice(["openai", "anthropic", "google"], case_sensitive=False),
+    type=click.Choice(
+        [
+            "openai", "anthropic", "google", "mistral",
+            "deepseek", "qwen", "groq", "together", "ollama",
+            "openai_compatible",
+        ],
+        case_sensitive=False,
+    ),
     default="openai",
-    help="LLM provider for interpretation (default: openai)"
+    help=(
+        "LLM provider for interpretation (default: openai). "
+        "OpenAI-compatible providers: deepseek, qwen, groq, together, ollama, openai_compatible."
+    ),
 )
 @click.option(
     "--api-key",
     type=str,
     default=None,
-    envvar=["AGENTFIT_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"],
-    help="API key for the LLM provider (or set AGENTFIT_API_KEY / provider env var)"
+    envvar=["AGENTFIT_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+            "MISTRAL_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY",
+            "GROQ_API_KEY", "TOGETHER_API_KEY"],
+    help="API key for the LLM provider (or set AGENTFIT_API_KEY / provider-specific env var). "
+         "Not required for Ollama.",
 )
 @click.option(
     "--model",
     "llm_model",
     type=str,
     default=None,
-    help="LLM model name for interpretation (uses provider default if omitted)"
+    help="LLM model name for interpretation (uses provider default if omitted). "
+         "Examples: gpt-4o, claude-opus-4-20250514, deepseek-reasoner, "
+         "qwen-max, llama-3.3-70b-versatile, mistral-large-latest",
+)
+@click.option(
+    "--base-url",
+    type=str,
+    default=None,
+    help="Base URL for openai_compatible provider or to override any provider's default endpoint. "
+         "Example: http://localhost:1234/v1 for LM Studio",
 )
 def evaluate(
     bnp: str,
@@ -122,6 +144,7 @@ def evaluate(
     provider: str,
     api_key: Optional[str],
     llm_model: Optional[str],
+    base_url: Optional[str],
 ):
     """Run agent evaluation based on BNP profile.
     
@@ -168,22 +191,38 @@ def evaluate(
         # Build interpretability config if requested
         interp_config = None
         if interpret:
-            if not api_key:
+            llm_provider = LLMProvider(provider.lower())
+
+            # Ollama is local and needs no key; openai_compatible needs a base_url
+            needs_key = llm_provider.value not in ("ollama",)
+            if needs_key and not api_key:
                 click.secho(
-                    "✗ --api-key is required when --interpret is enabled "
-                    "(or set AGENTFIT_API_KEY env var)",
+                    f"✗ --api-key is required for provider '{provider}' "
+                    "(or set AGENTFIT_API_KEY / provider-specific env var)",
                     fg="red",
                 )
                 raise click.Exit(1)
+
+            if llm_provider == LLMProvider.OPENAI_COMPATIBLE and not base_url:
+                click.secho(
+                    "✗ --base-url is required when using --provider openai_compatible. "
+                    "Example: --base-url http://localhost:1234/v1",
+                    fg="red",
+                )
+                raise click.Exit(1)
+
             interp_config = InterpretabilityConfig(
                 enabled=True,
-                provider=LLMProvider(provider.lower()),
+                provider=llm_provider,
                 api_key=api_key,
                 model=llm_model,
+                base_url=base_url,
             )
+            resolved_model = interp_config.get_model()
+            base_info = f" → {interp_config.get_base_url()}" if interp_config.get_base_url() else ""
             click.echo(
                 f"🧠 Interpretation enabled: {interp_config.provider.value} "
-                f"({interp_config.get_model()})"
+                f"({resolved_model}){base_info}"
             )
         
         # Create evaluation request
