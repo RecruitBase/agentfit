@@ -1,86 +1,101 @@
-"""Example: Evaluate an Anthropic Claude-based agent.
-
-This example demonstrates how to evaluate an agent built with
-Anthropic's Claude API.
 """
+Example: Evaluate an Anthropic Claude agent.
+
+Requires: pip install agentfit[anthropic]
+
+Run:
+    export ANTHROPIC_API_KEY="sk-ant-..."
+    python examples/evaluate_anthropic_agent.py
+"""
+
 import asyncio
+import os
+
 from agentfit.core.evaluator import Evaluator, EvaluationRequest
+from agentfit.bnp.parser import BNPParser
 from agentfit.adapters import AnthropicAdapter
-from agentfit.bnp.schema import BNPProfile, Domain
+from agentfit.scenarios import ScenarioLoader
+from agentfit.output import ReportGenerator
+from agentfit.interpretability.config import InterpretabilityConfig, LLMProvider
+
+BNP_MARKDOWN = """
+# Profile: Financial Analysis Agent
+
+## Metadata
+- Organization: Enterprise Corp
+- Domain: data_analysis
+- Description: AI agent for financial data analysis and reporting
+
+## Agent Requirements
+- Task Competence: Produces accurate financial summaries (required, priority: critical)
+- Compliance: Maintains audit trails for SOX/GDPR (required, priority: critical)
+- Safety: Handles sensitive financial data safely (required, priority: high)
+
+## Evaluation Setup
+- Complexity: complex
+- Dimensions:
+  - task_competence: 0.35
+  - compliance_auditability: 0.35
+  - safety_alignment: 0.20
+  - operational_performance: 0.10
+
+## Compliance
+- GDPR
+- SOX
+"""
 
 
 async def main():
-    """Run evaluation on an Anthropic agent."""
-    
-    # 1. Define your organization's needs
-    bnp_profile = BNPProfile(
-        organization_name="Enterprise Corp",
-        industry="Financial Services",
-        agent_domain=Domain.DATA_ANALYSIS,
-        required_dimensions=[
-            "task_competence",
-            "compliance_auditability",
-            "safety_alignment",
-            "operational_performance"
-        ],
-        compliance_requirements={
-            "gdpr": True,
-            "hipaa": False,
-            "sox": True
-        }
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("AGENT_API_KEY")
+
+    # 1. Load BNP profile
+    bnp = BNPParser.parse_markdown(BNP_MARKDOWN)
+    scenario = ScenarioLoader.get_scenario(domain=bnp.domain, complexity=bnp.task_complexity)
+
+    # 2. Create the Anthropic adapter
+    adapter = AnthropicAdapter(
+        agent_id="claude-financial-agent",
+        agent_name="Claude Sonnet — Financial Agent",
+        model="claude-sonnet-4-6",
+        api_key=api_key,
     )
-    
-    # 2. Configure the Anthropic adapter
-    adapter_config = {
-        "api_key": "your-anthropic-api-key",
-        "model": "claude-opus-4",
-        "timeout": 60
-    }
-    adapter = AnthropicAdapter(config=adapter_config)
-    
-    # 3. Create evaluation request
-    eval_request = EvaluationRequest(
-        agent_id="anthropic-agent-production",
-        agent_adapter=adapter,
-        bnp_profile=bnp_profile,
-        dimensions=[
-            "task_competence",
-            "compliance_auditability",
-            "safety_alignment"
-        ]
+
+    # 3. Interpretation (optional — reuse the same Anthropic key)
+    interp = None
+    if api_key:
+        interp = InterpretabilityConfig(
+            enabled=True,
+            provider=LLMProvider.ANTHROPIC,
+            api_key=api_key,
+            model="claude-haiku-4-5-20251001",  # cheaper model for interpretation
+        )
+
+    # 4. Build evaluation request
+    request = EvaluationRequest(
+        agent_id="claude-financial-agent",
+        agent_interface=adapter.to_agent_interface(),
+        scenario=scenario,
+        bnp_profile=bnp,
+        interpretability=interp,
     )
-    
-    # 4. Run evaluation
-    evaluator = Evaluator()
-    print("Starting evaluation of Anthropic-based agent...\n")
-    result = await evaluator.evaluate(eval_request)
-    
-    # 5. Display results
-    print("\n" + "="*70)
-    print(f"ANTHROPIC AGENT EVALUATION - {eval_request.agent_id}")
-    print("="*70)
-    print(f"\nOverall Fitness Score: {result.overall_score:.1%}\n")
-    
-    print("Dimension Breakdown:")
-    print("-" * 70)
-    for dimension in sorted(result.dimension_scores.keys()):
-        score = result.dimension_scores[dimension]
-        bar_length = int(score * 30)
-        bar = "█" * bar_length + "░" * (30 - bar_length)
-        print(f"{dimension:30} | {bar} | {score:6.1%}")
-    
-    print("-" * 70)
-    print(f"Overall Score:                    ", end="")
-    bar_length = int(result.overall_score * 30)
-    bar = "█" * bar_length + "░" * (30 - bar_length)
-    print(f"| {bar} | {result.overall_score:6.1%}")
-    
-    # 6. Compliance assessment
-    print("\nCompliance Assessment:")
-    print(f"  GDPR Compliant: {'✓' if result.overall_score > 0.7 else '✗'}")
-    print(f"  SOX Audit Ready: {'✓' if result.overall_score > 0.75 else '✗'}")
-    
-    print("\n" + "="*70)
+
+    # 5. Run evaluation
+    print(f"Evaluating {adapter.agent_name} ({adapter.model})…")
+    result = await Evaluator().evaluate(request)
+
+    # 6. Report
+    ReportGenerator.print_summary(result, bnp)
+
+    print(f"\nOverall score : {result.overall_score:.1%}")
+    print(f"Passed        : {result.passed}")
+    for dim_id, dr in result.dimension_results.items():
+        print(f"  {dim_id:<35} {dr.score:.1%}  {'✓' if dr.passed else '✗'}")
+
+    if result.interpretation:
+        print("\n── Interpretation ──────────────────────────────────")
+        print(result.interpretation.overall_interpretation.summary)
+        for rec in result.interpretation.recommendations:
+            print(f"  [{rec.priority.upper()}] {rec.area}: {rec.suggestion}")
 
 
 if __name__ == "__main__":

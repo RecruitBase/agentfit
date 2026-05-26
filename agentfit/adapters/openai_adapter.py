@@ -1,158 +1,80 @@
 """
-OpenAI Assistant/GPT Adapter for Universal Agent Protocol.
+OpenAI Adapter for Universal Agent Protocol.
 
-Implements UAP for OpenAI's models and Assistant API.
+Extends OpenAICompatibleAdapter targeting OpenAI's own API endpoint.
+Supports GPT-4o, GPT-4, GPT-3.5-Turbo and any model hosted at
+api.openai.com.
+
+Authentication: pass api_key= or set OPENAI_API_KEY in the environment.
 """
 
+import os
 from typing import Any, Dict, List, Optional
-import asyncio
-import time
 from loguru import logger
 
-from agentfit.protocol import (
-    UniversalAgentProtocol,
-    ToolDefinition,
-    ExecutionResult,
-    Message,
-    MessageRole,
-    ToolCall,
-    ToolResult,
-    ToolResultType,
-)
+from agentfit.adapters.openai_compatible_adapter import OpenAICompatibleAdapter
+from agentfit.protocol import ToolDefinition, AgentAdapterRegistry
 
 
-class OpenAIAdapter(UniversalAgentProtocol):
+class OpenAIAdapter(OpenAICompatibleAdapter):
     """
-    Adapter for OpenAI models (GPT-3.5, GPT-4, etc.).
-    
-    Wraps OpenAI API calls in the UAP interface.
-    Supports function calling and tool use.
+    Adapter for OpenAI models (GPT-4o, GPT-4, GPT-3.5-Turbo, etc.).
+
+    Thin subclass of OpenAICompatibleAdapter pre-configured for
+    api.openai.com.  All agentic loop and tool-call logic is inherited.
+
+    Example:
+        adapter = OpenAIAdapter(
+            agent_id="gpt4o",
+            agent_name="GPT-4o",
+            model="gpt-4o",
+            api_key="sk-...",   # or set OPENAI_API_KEY
+        )
     """
-    
+
+    _OPENAI_BASE = "https://api.openai.com/v1"
+
     def __init__(
         self,
         agent_id: str,
         agent_name: str,
         framework: str = "openai",
-        model: str = "gpt-4",
+        model: str = "gpt-4o",
         api_key: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        request_timeout: int = 120,
         version: str = "1.0",
     ):
-        """Initialize OpenAI adapter."""
-        super().__init__(agent_id, agent_name, framework, version)
-        self.model = model
-        self.api_key = api_key
-        self.system_prompt = (
-            "You are a helpful AI agent. Execute tasks step by step. "
-            "Use available tools when necessary. Always explain your reasoning."
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if not resolved_key:
+            logger.warning(
+                "OpenAIAdapter: no api_key provided and OPENAI_API_KEY is not set. "
+                "API calls will fail with 401."
+            )
+        super().__init__(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            framework=framework,
+            base_url=self._OPENAI_BASE,
+            model=model,
+            api_key=resolved_key,
+            system_prompt=system_prompt,
+            request_timeout=request_timeout,
+            version=version,
         )
-    
-    async def execute_task(
-        self,
-        task: str,
-        tools: Optional[List[ToolDefinition]] = None,
-        context: Optional[Dict[str, Any]] = None,
-        max_steps: int = 10,
-        timeout_seconds: int = 60,
-    ) -> ExecutionResult:
-        """Execute task using OpenAI model."""
-        task_id = f"openai-{int(time.time()*1000)}"
-        start_time = time.time()
-        
-        try:
-            # This is a placeholder implementation
-            # Real implementation would call OpenAI API
-            logger.info(f"OpenAI: Executing task '{task}' with model {self.model}")
-            
-            # Simulate execution
-            await asyncio.sleep(0.1)
-            
-            messages = [
-                Message(
-                    role=MessageRole.SYSTEM,
-                    content=self.system_prompt,
-                ),
-                Message(
-                    role=MessageRole.USER,
-                    content=task,
-                ),
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=f"I'll help you with: {task}",
-                ),
-            ]
-            
-            result = ExecutionResult(
-                task_id=task_id,
-                success=True,
-                final_output=f"Task completed: {task}",
-                messages=messages,
-                tool_calls=[],
-                tool_results=[],
-                errors=[],
-                total_steps=1,
-                execution_time_ms=(time.time() - start_time) * 1000,
-                metadata={
-                    "model": self.model,
-                    "framework": "openai",
-                    "tools_available": len(tools) if tools else 0,
-                },
-            )
-            
-            self.add_to_log(result)
-            return result
-        
-        except Exception as e:
-            logger.error(f"OpenAI execution error: {e}")
-            elapsed = (time.time() - start_time) * 1000
-            
-            result = ExecutionResult(
-                task_id=task_id,
-                success=False,
-                final_output=None,
-                errors=[str(e)],
-                execution_time_ms=elapsed,
-            )
-            self.add_to_log(result)
-            return result
-    
+
     async def get_capabilities(self) -> Dict[str, Any]:
-        """Return OpenAI model capabilities."""
-        return {
-            "framework": "openai",
-            "model": self.model,
-            "supports_tools": True,
-            "supports_parallel_tool_calls": True,
-            "supports_vision": "vision" in self.model,
-            "max_context_tokens": 8192 if "gpt-3.5" in self.model else 128000,
-            "supported_response_types": ["text", "json", "function_calls"],
-        }
-    
-    async def validate_tools(
-        self,
-        tools: List[ToolDefinition]
-    ) -> Dict[str, Any]:
-        """Validate tools for OpenAI function calling."""
-        supported = []
-        unsupported = []
-        errors = []
-        
-        for tool in tools:
-            # OpenAI supports standard JSON Schema format
-            if tool.parameters and isinstance(tool.parameters, dict):
-                supported.append(tool.name)
-            else:
-                unsupported.append(tool.name)
-                errors.append(f"Tool {tool.name} has invalid parameters format")
-        
-        return {
-            "valid": len(unsupported) == 0,
-            "supported_tools": supported,
-            "unsupported_tools": unsupported,
-            "validation_errors": errors,
-        }
+        caps = await super().get_capabilities()
+        caps.update(
+            {
+                "framework": "openai",
+                "supports_vision": "vision" in self.model or "o" in self.model,
+                "max_context_tokens": 8192 if "gpt-3.5" in self.model else 128000,
+                "supported_response_types": ["text", "json", "function_calls"],
+            }
+        )
+        return caps
 
 
-# Register adapter
-from agentfit.protocol import AgentAdapterRegistry
+# Re-register under "openai" (overrides the stub that was registered before)
 AgentAdapterRegistry.register("openai", OpenAIAdapter)

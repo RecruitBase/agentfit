@@ -132,20 +132,25 @@ BNPs override these defaults — a fintech company running a compliance-critical
 ### Installation
 
 ```bash
-# Core framework
+# Core framework (includes httpx — enough to evaluate against any local/self-hosted model)
 pip install agentfit
 
-# With a specific LLM provider for interpretability
+# Add provider SDKs for the *agent under test* or for interpretation
 pip install agentfit[openai]       # OpenAI (GPT-4o, o1)
-pip install agentfit[anthropic]    # Anthropic (Claude 3.5/4)
-pip install agentfit[google]       # Google (Gemini 2.0)
+pip install agentfit[anthropic]    # Anthropic Claude (required for AnthropicAdapter)
+pip install agentfit[google]       # Google Gemini / AgentKit
 pip install agentfit[mistral]      # Mistral
 
 # Install all providers and dev tools
 pip install agentfit[all]
 ```
 
-> DeepSeek, Qwen, Groq, Together AI, and Ollama all use the OpenAI SDK — `agentfit[openai]` covers them.
+> **Self-hosted models (vLLM, Ollama, LM Studio, llama.cpp):** no extra SDK needed.
+> AgentFit's `OpenAICompatibleAdapter` talks directly to any `/v1/chat/completions` endpoint
+> using `httpx`, which ships with the core install.
+>
+> **Groq, Together AI, DeepSeek, Qwen** are cloud-hosted but OpenAI-compatible —
+> `agentfit[openai]` covers them, or use `OpenAICompatibleAdapter` without any extra install.
 
 ### Step 1 — Define your BNP
 
@@ -173,71 +178,170 @@ Save this as `my_bnp.md`:
 ### Step 2 — Run via CLI
 
 ```bash
-# Scores only
+# Default: mock agent (no LLM needed — great for CI and pipeline smoke-tests)
 agentfit evaluate --bnp my_bnp.md --output results.json
 
-# Scores + LLM interpretation (OpenAI)
-agentfit evaluate \
-  --bnp my_bnp.md \
-  --output results.json \
-  --interpret \
-  --provider openai \
-  --api-key sk-...
+# Reproducible mock run (same seed → same scores every time)
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --mock-seed 42 --mock-behavior always_succeed
 
-# Use environment variable instead of passing the key
+# ── Real agent: self-hosted vLLM ───────────────────────────────────────────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter vllm \
+  --agent-model meta-llama/Meta-Llama-3-70B-Instruct \
+  --agent-base-url http://localhost:8000/v1
+
+# ── Real agent: Ollama (no key required) ──────────────────────────────────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter ollama \
+  --agent-model llama3
+
+# ── Real agent: LM Studio ─────────────────────────────────────────────────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter lmstudio \
+  --agent-model my-local-model \
+  --agent-base-url http://localhost:1234/v1
+
+# ── Real agent: OpenAI ────────────────────────────────────────────────────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter openai \
+  --agent-model gpt-4o \
+  --agent-api-key sk-...
+
+# ── Real agent: Anthropic Claude ──────────────────────────────────────────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter anthropic \
+  --agent-model claude-sonnet-4-6 \
+  --agent-api-key sk-ant-...
+
+# ── Real agent: Groq / Together / DeepSeek (OpenAI-compatible cloud) ──────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter groq \
+  --agent-model llama-3.3-70b-versatile \
+  --agent-api-key gsk_...
+
+# ── Add LLM interpretation on top of any of the above ─────────────────────
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter vllm --agent-model llama3 \
+  --agent-base-url http://localhost:8000/v1 \
+  --interpret --provider openai --api-key sk-...
+
+# Use environment variables instead of inline flags
+export AGENT_API_KEY="sk-..."
 export AGENTFIT_API_KEY="sk-..."
-agentfit evaluate --bnp my_bnp.md --output results.json --interpret
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter openai --interpret
 ```
+
+All `--agent-*` flags control the **agent being evaluated**. The `--provider` / `--api-key` / `--base-url` flags control the **LLM used for interpretation** — they can be different models.
 
 ### Step 3 — Run via Python
 
+**Option A — Mock agent (no LLM required)**
+
 ```python
 import asyncio
-from agentfit import (
-    Evaluator, EvaluationRequest, BNPParser,
-    InterpretabilityConfig, LLMProvider,
-)
+from agentfit.core.evaluator import Evaluator, EvaluationRequest
+from agentfit.bnp.parser import BNPParser
 from agentfit.mock_agent import MockAgent
 from agentfit.scenarios import ScenarioLoader
 from agentfit.output import ReportGenerator
 
 async def main():
-    # 1. Load BNP
     bnp = BNPParser.parse_markdown(open("my_bnp.md").read())
+    scenario = ScenarioLoader.get_scenario(domain=bnp.domain, complexity=bnp.task_complexity)
 
-    # 2. Load matching scenario (or supply your own dict)
-    scenario = ScenarioLoader.get_scenario(
-        domain=bnp.domain, complexity=bnp.task_complexity
-    )
+    # Seeded mock: same seed → identical scores every run (good for CI)
+    agent = MockAgent(agent_id="support-bot-v1", success_rate=0.85, seed=42)
 
-    # 3. Wire up your agent (MockAgent shown; swap for your real agent)
-    agent = MockAgent(agent_id="support-bot-v1", success_rate=0.85)
-
-    # 4. Build evaluation request
     request = EvaluationRequest(
         agent_id="support-bot-v1",
         agent_interface=agent.to_agent_interface(),
         scenario=scenario,
         bnp_profile=bnp,
-        interpretability=InterpretabilityConfig(
-            provider=LLMProvider.OPENAI,
-            api_key="sk-...",
-        ),
     )
 
-    # 5. Evaluate
     result = await Evaluator().evaluate(request)
-
-    # 6. Print the full report
     ReportGenerator.print_summary(result, bnp)
 
-    # 7. Access interpretation programmatically
-    if result.interpretation:
-        print(result.interpretation.overall_interpretation.summary)
-        for rec in result.interpretation.recommendations:
-            print(f"[{rec.priority.upper()}] {rec.area}: {rec.suggestion}")
+asyncio.run(main())
+```
+
+**Option B — Self-hosted model (vLLM / Ollama / LM Studio / any OpenAI-compatible endpoint)**
+
+```python
+import asyncio
+from agentfit.core.evaluator import Evaluator, EvaluationRequest
+from agentfit.bnp.parser import BNPParser
+from agentfit.adapters import OpenAICompatibleAdapter
+from agentfit.scenarios import ScenarioLoader
+from agentfit.output import ReportGenerator
+
+async def main():
+    bnp = BNPParser.parse_markdown(open("my_bnp.md").read())
+    scenario = ScenarioLoader.get_scenario(domain=bnp.domain, complexity=bnp.task_complexity)
+
+    # Works with vLLM, Ollama, LM Studio, llama.cpp — anything at /v1/chat/completions
+    adapter = OpenAICompatibleAdapter(
+        agent_id="llama3-70b",
+        agent_name="Llama-3 70B",
+        base_url="http://localhost:8000/v1",   # your server
+        model="meta-llama/Meta-Llama-3-70B-Instruct",
+        api_key="none",                         # omit or set "none" for local servers
+    )
+
+    request = EvaluationRequest(
+        agent_id="llama3-70b",
+        agent_interface=adapter.to_agent_interface(),
+        scenario=scenario,
+        bnp_profile=bnp,
+    )
+
+    result = await Evaluator().evaluate(request)
+    ReportGenerator.print_summary(result, bnp)
 
 asyncio.run(main())
+```
+
+**Option C — OpenAI / Anthropic / cloud providers**
+
+```python
+from agentfit.adapters import OpenAIAdapter, AnthropicAdapter
+
+# OpenAI (reads OPENAI_API_KEY from env if api_key= is omitted)
+adapter = OpenAIAdapter(agent_id="gpt4o", agent_name="GPT-4o", model="gpt-4o")
+
+# Anthropic (requires: pip install agentfit[anthropic])
+adapter = AnthropicAdapter(
+    agent_id="claude", agent_name="Claude Sonnet",
+    model="claude-sonnet-4-6", api_key="sk-ant-..."
+)
+```
+
+**Option D — With LLM interpretation**
+
+```python
+from agentfit.interpretability.config import InterpretabilityConfig, LLMProvider
+
+request = EvaluationRequest(
+    agent_id="my-agent",
+    agent_interface=adapter.to_agent_interface(),
+    scenario=scenario,
+    bnp_profile=bnp,
+    interpretability=InterpretabilityConfig(
+        enabled=True,
+        provider=LLMProvider.OPENAI,
+        api_key="sk-...",
+        model="gpt-4o",
+    ),
+)
+
+result = await Evaluator().evaluate(request)
+
+if result.interpretation:
+    print(result.interpretation.overall_interpretation.summary)
+    for rec in result.interpretation.recommendations:
+        print(f"[{rec.priority.upper()}] {rec.area}: {rec.suggestion}")
 ```
 
 ### Step 4 — REST API
@@ -262,6 +366,93 @@ curl -X POST http://localhost:8000/api/evaluate \
 
 # Poll for result
 curl http://localhost:8000/api/evaluations/<eval_id>
+```
+
+---
+
+## Connecting Self-Hosted & Custom LLMs
+
+AgentFit ships a first-class `OpenAICompatibleAdapter` that lets you evaluate **any model you can run locally or self-host** — no extra dependencies required beyond the core install.
+
+### Supported backends
+
+| Backend | Default URL | `--agent-adapter` | Extra deps |
+|---|---|---|---|
+| **vLLM** | `http://localhost:8000/v1` | `vllm` | none |
+| **Ollama** | `http://localhost:11434/v1` | `ollama` | none |
+| **LM Studio** | `http://localhost:1234/v1` | `lmstudio` | none |
+| **llama.cpp server** | `http://localhost:8080/v1` | `openai_compatible` | none |
+| **LocalAI** | `http://localhost:8080/v1` | `localai` | none |
+| **Groq** | `https://api.groq.com/openai/v1` | `groq` | none |
+| **Together AI** | `https://api.together.xyz/v1` | `together` | none |
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek` | none |
+| **Any custom endpoint** | *(you supply)* | `openai_compatible` | none |
+
+### How it works
+
+`OpenAICompatibleAdapter` runs a real multi-step agentic loop:
+
+1. Sends the task + tool definitions to your model via `/v1/chat/completions`
+2. If the model responds with tool calls, executes them and feeds the results back
+3. Repeats up to `max_steps` or until the model returns a plain text response
+4. Captures every `ToolCall`, `ToolResult`, and `Message` into the UAP `ExecutionResult` that all evaluation dimensions inspect
+
+### Custom tool execution
+
+By default the adapter returns a structured mock acknowledgment for every tool call, which is enough to measure whether the model selects the right tools and parameters.
+To wire in real tools, subclass and override `_execute_tool()`:
+
+```python
+from agentfit.adapters import OpenAICompatibleAdapter
+from agentfit.protocol import ToolCall
+from typing import Any, List, Optional
+
+class MyVLLMAdapter(OpenAICompatibleAdapter):
+    def _execute_tool(self, tc: ToolCall, tools) -> Any:
+        if tc.tool_name == "search_kb":
+            return my_knowledge_base.search(tc.parameters["query"])
+        if tc.tool_name == "create_ticket":
+            return ticket_system.create(**tc.parameters)
+        return {"status": "unknown_tool", "tool": tc.tool_name}
+
+adapter = MyVLLMAdapter(
+    agent_id="support-llm",
+    agent_name="Support LLM",
+    base_url="http://localhost:8000/v1",
+    model="my-finetuned-llama3",
+)
+```
+
+### Quick start: Ollama
+
+```bash
+# 1. Install and start Ollama
+ollama pull llama3
+ollama serve
+
+# 2. Evaluate against your BNP (no API key needed)
+agentfit evaluate \
+  --bnp my_bnp.md \
+  --output results.json \
+  --agent-adapter ollama \
+  --agent-model llama3
+```
+
+### Quick start: vLLM
+
+```bash
+# 1. Start vLLM server
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Meta-Llama-3-70B-Instruct \
+  --port 8000
+
+# 2. Evaluate
+agentfit evaluate \
+  --bnp my_bnp.md \
+  --output results.json \
+  --agent-adapter vllm \
+  --agent-model meta-llama/Meta-Llama-3-70B-Instruct \
+  --agent-base-url http://localhost:8000/v1
 ```
 
 ---
@@ -341,9 +532,15 @@ agentfit/
 │   └── parser.py             # Markdown → BNPProfile
 │
 ├── protocol/
-│   └── agent_protocol.py     # UniversalAgentProtocol base class
+│   └── agent_protocol.py     # UniversalAgentProtocol base class + execute() + to_agent_interface()
 │
-├── adapters/                 # Pre-built adapters (OpenAI, Anthropic, Google, generic)
+├── adapters/
+│   ├── openai_compatible_adapter.py  # Any /v1/chat/completions endpoint (vLLM, Ollama, etc.)
+│   ├── openai_adapter.py             # OpenAI api.openai.com (inherits above)
+│   ├── anthropic_adapter.py          # Anthropic Claude (real SDK with tool-use loop)
+│   ├── google_agentkit_adapter.py    # Google Gemini / AgentKit
+│   └── generic_adapter.py            # Wrap any Python callable
+│
 ├── server/
 │   └── app.py               # FastAPI REST server
 ├── cli.py                   # Click CLI
@@ -375,25 +572,68 @@ EvaluationRequest
 
 ## Custom Adapters
 
-Wrap any agent in 3 methods:
+### Option 1 — Subclass `OpenAICompatibleAdapter` (recommended for any HTTP endpoint)
+
+If your model server exposes `/v1/chat/completions`, the fastest path is to subclass
+`OpenAICompatibleAdapter` and override only `_execute_tool()` for real tool execution:
 
 ```python
-from agentfit.protocol import UniversalAgentProtocol, Message, ExecutionResult
+from agentfit.adapters import OpenAICompatibleAdapter
+from agentfit.protocol import ToolCall, AgentAdapterRegistry
+from typing import Any
+
+class MyModelAdapter(OpenAICompatibleAdapter):
+    def _execute_tool(self, tc: ToolCall, tools) -> Any:
+        # Replace mock with real tool logic
+        if tc.tool_name == "query_db":
+            return my_db.query(tc.parameters["sql"])
+        return {"status": "ok", "tool": tc.tool_name}
+
+AgentAdapterRegistry.register("my_model", MyModelAdapter)
+```
+
+### Option 2 — Implement `UniversalAgentProtocol` from scratch
+
+For non-HTTP agents (local Python objects, custom SDKs, etc.):
+
+```python
+from agentfit.protocol import (
+    UniversalAgentProtocol, ToolDefinition, ExecutionResult,
+    Message, MessageRole, AgentAdapterRegistry,
+)
+from typing import Any, Dict, List, Optional
 
 class MyAgentAdapter(UniversalAgentProtocol):
-    def __init__(self, config: dict):
-        super().__init__(config)
-        self.client = MyAgentSDK(api_key=config["api_key"])
+    def __init__(self, agent_id: str, agent_name: str, my_client):
+        super().__init__(agent_id, agent_name, framework="my_agent")
+        self.client = my_client
 
-    async def execute(self, messages: list[Message], tools=None) -> ExecutionResult:
-        response = await self.client.chat(
-            messages=[{"role": m.role.value, "content": m.content} for m in messages]
+    async def execute_task(
+        self,
+        task: str,
+        tools: Optional[List[ToolDefinition]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        max_steps: int = 10,
+        timeout_seconds: int = 60,
+    ) -> ExecutionResult:
+        response = await self.client.run(task)
+        return ExecutionResult(
+            task_id=f"my-{task[:8]}",
+            success=response.ok,
+            final_output=response.text,
         )
-        return ExecutionResult(success=True, output=response.text)
 
-    async def validate_connection(self) -> bool:
-        return await self.client.ping()
+    async def get_capabilities(self) -> Dict[str, Any]:
+        return {"supports_tools": False, "max_context_tokens": 4096}
+
+    async def validate_tools(self, tools) -> Dict[str, Any]:
+        return {"valid": True, "supported_tools": [], "unsupported_tools": [], "validation_errors": []}
+
+AgentAdapterRegistry.register("my_agent", MyAgentAdapter)
 ```
+
+Both approaches inherit `execute()` and `to_agent_interface()` from `UniversalAgentProtocol`,
+so your adapter works immediately with `EvaluationRequest` and all evaluation dimensions.
 
 ---
 
@@ -476,11 +716,27 @@ DimensionRegistry.register(MyCustomDimension)
 ```bash
 pip install -e ".[dev]"
 
-pytest tests/ -v                              # all tests
-pytest tests/ --cov=agentfit --cov-report=html  # with coverage
-pytest tests/test_dimensions.py -v           # dimension unit tests
-pytest tests/test_evaluator.py -v            # evaluator integration tests
-pytest tests/test_bnp.py -v                  # BNP parsing tests
+pytest tests/ -v                               # all tests
+pytest tests/ --cov=agentfit --cov-report=html # with coverage
+
+# Specific suites
+pytest tests/test_adapters.py -v              # adapter + OpenAICompatibleAdapter tests
+pytest tests/test_mock_agent.py -v            # MockAgent seed/behavior/async tests
+pytest tests/test_dimensions.py -v            # dimension unit tests
+pytest tests/test_evaluator.py -v             # evaluator integration tests
+pytest tests/test_bnp.py -v                   # BNP parsing tests
+pytest tests/test_protocol.py -v              # UAP protocol tests
+```
+
+The full test suite runs against the mock agent by default — no LLM API key or running server
+required. To run integration tests against a real endpoint, set environment variables:
+
+```bash
+# Against a local Ollama instance
+AGENT_API_KEY=none pytest tests/ -v -k "live"
+
+# Against OpenAI
+AGENT_API_KEY=sk-... pytest tests/ -v -k "live"
 ```
 
 ---
@@ -500,9 +756,7 @@ For larger changes (new dimensions, provider integrations, architecture changes)
 
 ## About RecruitBase
 
-AgentFit is built and maintained by **[RecruitBase](https://recruitbase.work)** — a hiring intelligence platform that applies structured, objective evaluation to both human candidates and AI agents.
-
-RecruitBase's thesis is simple: *the most consequential decisions a team makes deserve the same rigour, whether the candidate is a person or an AI system.* They build structured hiring pipelines with AI-powered evaluation, culture-fit scoring (CultureMap), and ATS integrations — and AgentFit is the evaluation engine powering their AI agent assessment capability.
+AgentFit is built and maintained by **[RecruitBase](https://recruitbase.work)** — a hiring intelligence platform that applies structured, objective evaluation to AI agents.
 
 > *"We evaluate AI agents the same way we'd interview a human: define the requirements, set the criteria, run a structured assessment, and explain the result."*
 

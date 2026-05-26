@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\HP\\\\Desktop\\\\Projects\\\\Recruit Base\\\\AgentFit Tool\" -Recurse -Name)",
+      "Bash(grep -E '\\\\.\\(py|toml\\)$')",
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(\"venv/Scripts/python.exe\" -m agentfit evaluate --help)",
+      "Bash(\"venv/Scripts/python.exe\" -m pytest tests/test_mock_agent.py tests/test_adapters.py tests/test_protocol.py tests/test_evaluator.py -v --tb=short)"
+    ]
+  }
+}

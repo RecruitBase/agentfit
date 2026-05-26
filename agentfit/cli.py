@@ -30,6 +30,89 @@ from agentfit.output import OutputFormatter, ReportGenerator
 from agentfit.mock_agent import MockAgent
 from agentfit.interpretability.config import InterpretabilityConfig, LLMProvider
 
+# Real adapter imports (lazy — only imported when needed to keep startup fast)
+_ADAPTER_CHOICES = [
+    "mock",
+    "openai",
+    "anthropic",
+    "openai_compatible",
+    "vllm",
+    "ollama",
+    "lmstudio",
+    "localai",
+    "groq",
+    "together",
+    "deepseek",
+]
+
+_ADAPTER_NEEDS_BASE_URL = {"openai_compatible", "vllm", "ollama", "lmstudio", "localai"}
+_ADAPTER_NEEDS_KEY = _ADAPTER_CHOICES[1:]  # everyone except "mock"
+_ADAPTER_NO_KEY = {"ollama", "localai"}     # servers that accept any/no key
+
+
+def _build_real_adapter(
+    adapter: str,
+    agent_id: str,
+    agent_name: str,
+    agent_model: Optional[str],
+    agent_api_key: Optional[str],
+    agent_base_url: Optional[str],
+):
+    """Instantiate the requested real adapter."""
+    from agentfit.adapters import (
+        OpenAICompatibleAdapter,
+        OpenAIAdapter,
+        AnthropicAdapter,
+    )
+
+    if adapter == "openai":
+        return OpenAIAdapter(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            model=agent_model or "gpt-4o",
+            api_key=agent_api_key,
+        )
+
+    if adapter == "anthropic":
+        return AnthropicAdapter(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            model=agent_model or "claude-sonnet-4-6",
+            api_key=agent_api_key,
+        )
+
+    # All remaining are OpenAI-compatible endpoints
+    default_bases = {
+        "ollama": "http://localhost:11434/v1",
+        "lmstudio": "http://localhost:1234/v1",
+        "localai": "http://localhost:8080/v1",
+        "groq": "https://api.groq.com/openai/v1",
+        "together": "https://api.together.xyz/v1",
+        "deepseek": "https://api.deepseek.com/v1",
+        "vllm": "http://localhost:8000/v1",
+    }
+    default_models = {
+        "ollama": "llama3",
+        "lmstudio": "local-model",
+        "groq": "llama-3.3-70b-versatile",
+        "together": "meta-llama/Meta-Llama-3-70B-Instruct-Turbo",
+        "deepseek": "deepseek-chat",
+        "vllm": "default",
+    }
+
+    base_url = agent_base_url or default_bases.get(adapter, "http://localhost:8000/v1")
+    model = agent_model or default_models.get(adapter, "default")
+    api_key = agent_api_key or "none"
+
+    return OpenAICompatibleAdapter(
+        agent_id=agent_id,
+        agent_name=agent_name,
+        framework=adapter,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
+
 
 # Configure logging
 logger.remove()  # Remove default handler
@@ -79,10 +162,71 @@ def main():
     help="Enable debug logging"
 )
 @click.option(
+    "--agent-adapter",
+    "agent_adapter",
+    type=click.Choice(_ADAPTER_CHOICES, case_sensitive=False),
+    default="mock",
+    show_default=True,
+    help=(
+        "Agent adapter to use for evaluation. "
+        "'mock' runs the built-in mock agent (no LLM required). "
+        "All others connect to a real model endpoint: "
+        "openai, anthropic, vllm, ollama, lmstudio, localai, groq, together, deepseek, openai_compatible."
+    ),
+)
+@click.option(
+    "--agent-model",
+    "agent_model",
+    type=str,
+    default=None,
+    help=(
+        "Model name for the agent under evaluation (used when --agent-adapter != mock). "
+        "Examples: gpt-4o, claude-sonnet-4-6, llama3, "
+        "meta-llama/Meta-Llama-3-70B-Instruct."
+    ),
+)
+@click.option(
+    "--agent-api-key",
+    "agent_api_key",
+    type=str,
+    default=None,
+    envvar=["AGENT_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+    help=(
+        "API key for the agent endpoint. "
+        "Not required for Ollama / local servers. "
+        "Can also be set via AGENT_API_KEY env var."
+    ),
+)
+@click.option(
+    "--agent-base-url",
+    "agent_base_url",
+    type=str,
+    default=None,
+    help=(
+        "Base URL for the agent endpoint (required for openai_compatible / vllm / lmstudio). "
+        "Example: http://localhost:8000/v1"
+    ),
+)
+@click.option(
     "--success-rate",
     type=float,
     default=0.8,
-    help="Mock agent success rate (0-1, default: 0.8)"
+    help="Mock agent success rate 0-1 (only used when --agent-adapter mock)."
+)
+@click.option(
+    "--mock-seed",
+    "mock_seed",
+    type=int,
+    default=None,
+    help="Random seed for mock agent reproducibility (only used when --agent-adapter mock)."
+)
+@click.option(
+    "--mock-behavior",
+    "mock_behavior",
+    type=click.Choice(["realistic", "always_succeed", "always_fail"], case_sensitive=False),
+    default="realistic",
+    show_default=True,
+    help="Mock agent behavior mode (only used when --agent-adapter mock)."
 )
 @click.option(
     "--interpret",
@@ -139,7 +283,13 @@ def evaluate(
     format: str,
     agent_id: str,
     verbose: bool,
+    agent_adapter: str,
+    agent_model: Optional[str],
+    agent_api_key: Optional[str],
+    agent_base_url: Optional[str],
     success_rate: float,
+    mock_seed: Optional[int],
+    mock_behavior: str,
     interpret: bool,
     provider: str,
     api_key: Optional[str],
@@ -147,11 +297,30 @@ def evaluate(
     base_url: Optional[str],
 ):
     """Run agent evaluation based on BNP profile.
-    
-    Example:
-        agentfit evaluate --bnp customer_bnp.md --output results.json
-        agentfit evaluate --bnp customer_bnp.md --evals task_competence --format yaml
-        agentfit evaluate --bnp customer_bnp.md --output results.json --interpret --api-key sk-...
+
+    Examples:
+
+    \b
+    # Mock agent (no LLM needed)
+    agentfit evaluate --bnp customer_bnp.md --output results.json
+
+    \b
+    # vLLM self-hosted endpoint
+    agentfit evaluate --bnp customer_bnp.md --output results.json \\
+        --agent-adapter vllm \\
+        --agent-model meta-llama/Meta-Llama-3-70B-Instruct \\
+        --agent-base-url http://localhost:8000/v1
+
+    \b
+    # Ollama (no key required)
+    agentfit evaluate --bnp customer_bnp.md --output results.json \\
+        --agent-adapter ollama --agent-model llama3
+
+    \b
+    # Real OpenAI + LLM interpretation
+    agentfit evaluate --bnp customer_bnp.md --output results.json \\
+        --agent-adapter openai --agent-model gpt-4o --agent-api-key sk-... \\
+        --interpret --provider openai --api-key sk-...
     """
     
     # Setup logging
@@ -183,10 +352,56 @@ def evaluate(
         )
         click.echo(f"✓ Scenario: {scenario['id']} ({scenario['complexity']})")
         
-        # Create mock agent
-        click.echo("🤖 Creating mock agent...")
-        agent = MockAgent(agent_id=agent_id, success_rate=success_rate)
-        agent_interface = agent.to_agent_interface()
+        # Build agent interface
+        agent_name = agent_id
+        if agent_adapter == "mock":
+            click.echo(
+                f"🤖 Using mock agent "
+                f"(behavior={mock_behavior}, success_rate={success_rate}"
+                + (f", seed={mock_seed}" if mock_seed is not None else "")
+                + ")"
+            )
+            agent = MockAgent(
+                agent_id=agent_id,
+                success_rate=success_rate,
+                seed=mock_seed,
+                behavior=mock_behavior,
+            )
+            agent_interface = agent.to_agent_interface()
+        else:
+            # Validate flags before building the adapter
+            if agent_adapter in _ADAPTER_NEEDS_BASE_URL and not agent_base_url:
+                # Some have a sensible localhost default; vllm and openai_compatible don't
+                if agent_adapter in ("vllm", "openai_compatible"):
+                    click.secho(
+                        f"✗ --agent-base-url is required for --agent-adapter {agent_adapter}. "
+                        "Example: --agent-base-url http://localhost:8000/v1",
+                        fg="red",
+                    )
+                    raise click.Exit(1)
+
+            if agent_adapter not in _ADAPTER_NO_KEY and not agent_api_key:
+                if agent_adapter not in ("lmstudio", "localai", "vllm", "ollama"):
+                    click.secho(
+                        f"⚠  --agent-api-key not set for '{agent_adapter}'. "
+                        "Set AGENT_API_KEY or pass --agent-api-key if the server requires auth.",
+                        fg="yellow",
+                    )
+
+            click.echo(
+                f"🤖 Using {agent_adapter} adapter"
+                + (f" → {agent_base_url}" if agent_base_url else "")
+                + (f" (model: {agent_model})" if agent_model else "")
+            )
+            real_adapter = _build_real_adapter(
+                adapter=agent_adapter,
+                agent_id=agent_id,
+                agent_name=agent_name,
+                agent_model=agent_model,
+                agent_api_key=agent_api_key,
+                agent_base_url=agent_base_url,
+            )
+            agent_interface = real_adapter.to_agent_interface()
         
         # Build interpretability config if requested
         interp_config = None

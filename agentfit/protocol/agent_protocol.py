@@ -247,18 +247,70 @@ class UniversalAgentProtocol(ABC):
         """
         pass
     
+    async def execute(
+        self,
+        task: str,
+        expected_tools: Optional[List[str]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Dimension-compatible execution wrapper around execute_task().
+
+        Dimensions call agent.execute(task, expected_tools=[...]) and expect
+        a dict with: success, steps, tools_used, output, errors, attempts.
+        This method adapts ExecutionResult into that shape so real adapters
+        work with all built-in dimensions without any dimension changes.
+        """
+        tools: Optional[List[ToolDefinition]] = None
+        if expected_tools:
+            tools = [
+                ToolDefinition(name=t, description=f"Tool: {t}", parameters={})
+                for t in expected_tools
+            ]
+
+        result = await self.execute_task(task=task, tools=tools, context=context or {})
+
+        return {
+            "success": result.success,
+            "steps": [
+                {"action": msg.content}
+                for msg in result.messages
+                if msg.role == MessageRole.ASSISTANT
+            ],
+            "tools_used": [tc.tool_name for tc in result.tool_calls],
+            "output": result.final_output or "",
+            "errors": result.errors,
+            "attempts": 1,
+        }
+
+    def to_agent_interface(self) -> Callable:
+        """
+        Return an async callable compatible with EvaluationRequest.agent_interface.
+
+        Usage:
+            adapter = OpenAICompatibleAdapter(...)
+            request = EvaluationRequest(agent_interface=adapter.to_agent_interface(), ...)
+        """
+        async def _call(scenario: Dict[str, Any], context: Optional[Dict[str, Any]] = None):
+            task = scenario.get("task", "") if isinstance(scenario, dict) else str(scenario)
+            expected_tools = scenario.get("expected_tools", []) if isinstance(scenario, dict) else []
+            return await self.execute(task=task, expected_tools=expected_tools, context=context)
+
+        return _call
+
     def add_to_log(self, result: ExecutionResult) -> None:
         """Add execution result to log."""
         self.execution_log.append(result)
-    
+
     def get_execution_history(self) -> List[ExecutionResult]:
         """Get all execution results."""
         return self.execution_log
-    
+
     def clear_execution_log(self) -> None:
         """Clear execution history."""
         self.execution_log = []
-    
+
     def to_metadata(self) -> Dict[str, Any]:
         """Get agent metadata for reporting."""
         return {

@@ -1,161 +1,145 @@
-"""Example: Batch evaluate multiple agents.
-
-This demonstrates how to evaluate multiple agents against the same
-business requirements and compare results.
 """
+Example: Batch-evaluate and compare multiple agents against the same BNP.
+
+Compares a mock agent, an OpenAI agent, and a self-hosted Ollama model
+in parallel, then prints a ranked comparison table.
+
+Run (no API keys → mock + Ollama only):
+    python examples/batch_evaluation.py
+
+Run with OpenAI:
+    AGENT_API_KEY=sk-... python examples/batch_evaluation.py
+"""
+
 import asyncio
+import os
+
 from agentfit.core.evaluator import Evaluator, EvaluationRequest
-from agentfit.adapters import OpenAIAdapter, AnthropicAdapter, GenericAdapter
-from agentfit.bnp.schema import BNPProfile, Domain
-from agentfit.output import ResultExporter
+from agentfit.bnp.parser import BNPParser
+from agentfit.adapters import OpenAIAdapter, OpenAICompatibleAdapter
+from agentfit.mock_agent import MockAgent
+from agentfit.scenarios import ScenarioLoader
+from agentfit.output import ReportGenerator
+
+BNP_MARKDOWN = """
+# Profile: Customer Support Comparison
+
+## Metadata
+- Organization: MultiAgent Corp
+- Domain: customer_service
+- Description: Side-by-side evaluation of multiple agents for support automation
+
+## Agent Requirements
+- Task Completion: Resolves tickets end-to-end (required, priority: critical)
+- Tool Use: Uses CRM and billing APIs correctly (required, priority: high)
+- Safety: Refuses harmful requests (required, priority: high)
+
+## Evaluation Setup
+- Complexity: moderate
+- Dimensions:
+  - task_competence: 0.4
+  - tool_use: 0.3
+  - safety_alignment: 0.3
+"""
+
+DIMENSIONS = ["task_competence", "tool_use", "safety_alignment"]
 
 
-async def evaluate_agent(evaluator, agent_id, adapter, bnp_profile, dimensions):
-    """Evaluate a single agent."""
-    request = EvaluationRequest(
+def _build_agents(api_key: str):
+    agents = []
+
+    # Always include the mock (no key needed — good baseline)
+    agents.append({
+        "id": "mock-baseline",
+        "interface": MockAgent(agent_id="mock-baseline", success_rate=0.85, seed=42).to_agent_interface(),
+    })
+
+    # Ollama (local, no key) — skip if server is likely not running in CI
+    if os.environ.get("AGENTFIT_TEST_OLLAMA"):
+        ollama = OpenAICompatibleAdapter(
+            agent_id="ollama-llama3",
+            agent_name="Ollama Llama3",
+            framework="ollama",
+            base_url="http://localhost:11434/v1",
+            model="llama3",
+        )
+        agents.append({"id": "ollama-llama3", "interface": ollama.to_agent_interface()})
+
+    # OpenAI GPT-4o (real API)
+    if api_key:
+        gpt = OpenAIAdapter(
+            agent_id="gpt4o",
+            agent_name="GPT-4o",
+            model="gpt-4o",
+            api_key=api_key,
+        )
+        agents.append({"id": "gpt4o", "interface": gpt.to_agent_interface()})
+
+    return agents
+
+
+async def evaluate_one(evaluator, agent_id, agent_interface, bnp, scenario):
+    req = EvaluationRequest(
         agent_id=agent_id,
-        agent_adapter=adapter,
-        bnp_profile=bnp_profile,
-        dimensions=dimensions
+        agent_interface=agent_interface,
+        scenario=scenario,
+        bnp_profile=bnp,
+        dimensions=DIMENSIONS,
     )
-    
-    print(f"Evaluating {agent_id}...")
-    result = await evaluator.evaluate(request)
-    return result
+    return await evaluator.evaluate(req)
 
 
 async def main():
-    """Batch evaluate multiple agents."""
-    
-    # Define shared requirements
-    bnp_profile = BNPProfile(
-        organization_name="MultiAgent Corp",
-        industry="Enterprise",
-        agent_domain=Domain.CUSTOMER_SERVICE,
-        required_dimensions=[
-            "task_competence",
-            "tool_use",
-            "safety_alignment",
-            "operational_performance",
-            "compliance_auditability"
-        ]
-    )
-    
-    # Define agents to evaluate
-    agents = [
-        {
-            "id": "gpt-4-agent",
-            "adapter": OpenAIAdapter(config={
-                "model": "gpt-4-turbo",
-                "api_key": "your-api-key"
-            })
-        },
-        {
-            "id": "claude-opus-agent",
-            "adapter": AnthropicAdapter(config={
-                "model": "claude-opus-4",
-                "api_key": "your-api-key"
-            })
-        },
-        {
-            "id": "custom-local-agent",
-            "adapter": GenericAdapter(config={
-                "model": "local-llm",
-                "timeout": 30
-            })
-        }
-    ]
-    
-    dimensions = [
-        "task_competence",
-        "tool_use",
-        "safety_alignment"
-    ]
-    
-    # Run evaluations
+    api_key = os.environ.get("AGENT_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+    bnp = BNPParser.parse_markdown(BNP_MARKDOWN)
+    scenario = ScenarioLoader.get_scenario(domain=bnp.domain, complexity=bnp.task_complexity)
+
+    agents = _build_agents(api_key)
     evaluator = Evaluator()
-    results = {}
-    
-    print("="*70)
+
+    print("=" * 70)
     print("BATCH AGENT EVALUATION")
-    print("="*70 + "\n")
-    
-    for agent_config in agents:
-        result = await evaluate_agent(
-            evaluator,
-            agent_config["id"],
-            agent_config["adapter"],
-            bnp_profile,
-            dimensions
-        )
-        results[agent_config["id"]] = result
-    
-    # Compare results
-    print("\n" + "="*70)
-    print("EVALUATION RESULTS COMPARISON")
-    print("="*70 + "\n")
-    
-    # Overall scores
-    print("Overall Fitness Scores:")
+    print(f"Evaluating {len(agents)} agent(s) across {len(DIMENSIONS)} dimensions")
+    print("=" * 70)
+
+    # Run all evaluations in parallel
+    tasks = [
+        evaluate_one(evaluator, a["id"], a["interface"], bnp, scenario)
+        for a in agents
+    ]
+    results = await asyncio.gather(*tasks)
+    results_by_id = {a["id"]: r for a, r in zip(agents, results)}
+
+    # ── Overall ranking ──────────────────────────────────────────────────
+    print("\nOverall Fitness Scores (ranked):")
     print("-" * 70)
-    for agent_id, result in sorted(results.items(), 
-                                   key=lambda x: x[1].overall_score, 
-                                   reverse=True):
+    for agent_id, result in sorted(results_by_id.items(),
+                                   key=lambda x: x[1].overall_score, reverse=True):
         score = result.overall_score
-        bar_length = int(score * 35)
-        bar = "█" * bar_length + "░" * (35 - bar_length)
-        print(f"{agent_id:25} | {bar} | {score:6.1%}")
-    
-    # Dimension comparison
-    print("\n" + "="*70)
-    print("DIMENSION-BY-DIMENSION COMPARISON")
-    print("="*70)
-    
-    for dimension in dimensions:
-        print(f"\n{dimension.replace('_', ' ').upper()}:")
-        print("-" * 70)
-        
-        for agent_id, result in sorted(results.items(),
-                                       key=lambda x: x[1].dimension_scores.get(dimension, 0),
+        bar = "█" * int(score * 35) + "░" * (35 - int(score * 35))
+        status = "✓ PASS" if result.passed else "✗ FAIL"
+        print(f"  {agent_id:<25} | {bar} | {score:5.1%}  {status}")
+
+    # ── Per-dimension breakdown ──────────────────────────────────────────
+    print("\nDimension-by-dimension breakdown:")
+    for dim in DIMENSIONS:
+        print(f"\n  {dim.replace('_', ' ').upper()}")
+        print("  " + "-" * 60)
+        for agent_id, result in sorted(results_by_id.items(),
+                                       key=lambda x: x[1].dimension_results.get(dim, type("o", (), {"score": 0})()).score,
                                        reverse=True):
-            score = result.dimension_scores.get(dimension, 0)
-            bar_length = int(score * 30)
-            bar = "█" * bar_length + "░" * (30 - bar_length)
-            print(f"  {agent_id:23} | {bar} | {score:6.1%}")
-    
-    # Recommendation
-    print("\n" + "="*70)
-    print("RECOMMENDATION")
-    print("="*70)
-    
-    best_agent_id = max(results.items(), key=lambda x: x[1].overall_score)[0]
-    best_result = results[best_agent_id]
-    
-    print(f"\nBest Agent: {best_agent_id}")
-    print(f"Overall Score: {best_result.overall_score:.1%}")
-    print("\nStrengths:")
-    for dim, score in best_result.dimension_scores.items():
-        if score > 0.8:
-            print(f"  ✓ {dim.replace('_', ' ').title()}: {score:.1%}")
-    
-    print("\nAreas for Improvement:")
-    for dim, score in best_result.dimension_scores.items():
-        if score < 0.7:
-            print(f"  ✗ {dim.replace('_', ' ').title()}: {score:.1%}")
-    
-    # Export results
-    print("\n" + "="*70)
-    print("Exporting results...")
-    
-    exporter = ResultExporter()
-    exporter.export_comparison(
-        results=results,
-        output_path="evaluation_results.json",
-        format="json"
-    )
-    
-    print("Results exported to: evaluation_results.json")
-    print("="*70 + "\n")
+            dr = result.dimension_results.get(dim)
+            if dr:
+                bar = "█" * int(dr.score * 30) + "░" * (30 - int(dr.score * 30))
+                print(f"    {agent_id:<23} | {bar} | {dr.score:5.1%}")
+
+    # ── Recommendation ───────────────────────────────────────────────────
+    best_id = max(results_by_id, key=lambda k: results_by_id[k].overall_score)
+    print(f"\nRecommendation: use '{best_id}' "
+          f"(overall score: {results_by_id[best_id].overall_score:.1%})")
+
+    print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":
