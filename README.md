@@ -22,14 +22,22 @@
 
 ## What is AgentFit?
 
-AgentFit is an **open-source, enterprise-grade agent evaluation and interpretability framework**. It gives teams a structured, reproducible way to assess AI agents across seven behavioural dimensions — then uses an LLM to explain *why* an agent scored the way it did, in the context of your specific business requirements.
+AgentFit is an **open-source, enterprise-grade agent evaluation and governance framework**. It gives teams a structured, reproducible way to assess AI agents across seven behavioural dimensions — then produces a **binary governance decision** (PASS / FAIL against thresholds you define) alongside reliability statistics and an LLM-grounded audit narrative.
 
-It is **framework-agnostic**: bring your OpenAI, Anthropic, Google, or fully custom agent. AgentFit evaluates it through a universal protocol without you changing a single line of agent code.
+It is **framework-agnostic**: bring your OpenAI, Anthropic, Google, vLLM, Ollama, or fully custom agent. AgentFit evaluates it through a universal protocol without changing a single line of agent code.
 
 ```
-Define requirements  →  Run evaluation  →  Get scores + explanations  →  Act
-    (BNP profile)       (7 dimensions)     (grounded in your context)    (recommendations)
+Define requirements  →  Run k trials  →  Governance decision  →  Audit trail
+    (BNP profile)       (7 dimensions)    PASS / FAIL + rationale   (harness snapshot)
 ```
+
+> **Research grounding.** AgentFit is built on three published findings from the agent evaluation literature:
+>
+> 1. **Binary decisions outperform continuous scores.** A `0.74` Fit Score has the same central-tendency bias and inter-rater instability as a Likert "3". Enterprise governance needs a decision — *deploy* or *block* — not a float. AgentFit surfaces the binary decision as the headline; the continuous score is kept as supporting evidence for tracking deltas over time.
+>
+> 2. **Reliability ≠ capability.** Pass@k (at least one of *k* trials passes) measures capability; Pass^k (every trial passes) measures reliability. An autonomous fraud-detection workflow must require Pass^k. A creative-content workflow with human review may accept Pass@k. AgentFit computes both from the same run.
+>
+> 3. **The harness is part of what you're measuring.** Model version, temperature, tools available, and scenario seed are not neutral background — they determine outcomes. AgentFit snapshots the harness alongside every result so re-runs are comparable and regression alerts are meaningful.
 
 ---
 
@@ -154,7 +162,7 @@ pip install agentfit[all]
 
 ### Step 1 — Define your BNP
 
-Save this as `my_bnp.md`:
+Save this as `my_bnp.md`. BNPs now carry **per-dimension governance thresholds**, reliability requirements, and scenario lifecycle tags alongside weights:
 
 ```markdown
 # Profile: Support Agent
@@ -167,13 +175,29 @@ Save this as `my_bnp.md`:
 ## Agent Requirements
 - Task Completion: Resolves issues end-to-end (required, priority: critical)
 - Tool Reliability: Calls APIs without failure (required, priority: high)
+- Safety: Refuses harmful requests (required, priority: critical)
 
 ## Evaluation Setup
 - Complexity: moderate
+- K Trials: 5            # run 5 independent trials → Pass@5 + Pass^5
 - Dimensions:
-  - task_competence: 0.6
-  - tool_use: 0.4
+  #  name              weight  threshold  reliability    lifecycle
+  - task_competence:   0.40,   threshold: 0.80
+  - tool_use:          0.30,   threshold: 0.85
+  - safety_alignment:  0.30,   threshold: 0.95,  reliability: pass_all_k,  lifecycle: regression
+
+## Constraints
+- Max Latency: 5000ms
+
+## Compliance
+- GDPR
 ```
+
+**Key fields:**
+- `threshold` — minimum score to PASS this dimension (default 0.70). If any dimension falls below its threshold, the governance decision is **FAIL**.
+- `reliability: pass_all_k` — every trial must pass (required for autonomous workflows). Default `pass_at_k` requires only one trial to pass.
+- `lifecycle: regression` — this dimension is a regression guard; any failure triggers a `⚠ REGRESSION ALERT` in the report.
+- `K Trials` — number of independent evaluation trials (default 1). Use 5–10 for governance-grade reliability stats.
 
 ### Step 2 — Run via CLI
 
@@ -184,6 +208,10 @@ agentfit evaluate --bnp my_bnp.md --output results.json
 # Reproducible mock run (same seed → same scores every time)
 agentfit evaluate --bnp my_bnp.md --output results.json \
   --mock-seed 42 --mock-behavior always_succeed
+
+# Governance mode: 5 trials → Pass@5 + Pass^5 per dimension
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --trials 5
 
 # ── Real agent: self-hosted vLLM ───────────────────────────────────────────
 agentfit evaluate --bnp my_bnp.md --output results.json \
@@ -370,6 +398,111 @@ curl http://localhost:8000/api/evaluations/<eval_id>
 
 ---
 
+## Governance Model
+
+### Why a decision, not a score
+
+Continuous scores (0.74, 0.81…) have well-documented problems in evaluation research: central tendency bias, annotator disagreement, and the practical problem that "0.74" gives a compliance team nothing to act on. AgentFit moves the headline output to a **binary governance decision** anchored to thresholds your organisation defines:
+
+```
+GOVERNANCE DECISION:  ✗ FAIL
+FAIL on: safety_alignment: 0.71 < threshold 0.95
+```
+
+Continuous scores remain available per sub-metric as supporting evidence and for tracking deltas over time — they're just not the headline.
+
+### Pass@k vs Pass^k — capability vs reliability
+
+An agent that succeeds once and fails intermittently is unacceptable for autonomous production use, even if its average score looks fine.
+
+| Metric | Definition | Use case |
+|---|---|---|
+| **Pass@k** | At least 1 of k trials passes | Human-in-the-loop: a human can select the best output |
+| **Pass^k** | Every trial passes (strict) | Autonomous: no human review; reliability is everything |
+| **Dispersion (σ)** | Std-dev of per-trial scores | Signals unstable behaviour even when mean is acceptable |
+
+Set `K Trials: 5` in your BNP and `reliability: pass_all_k` on safety-critical dimensions. The output:
+
+```
+RELIABILITY (5 trials)
+  safety_alignment    Pass@5: FAIL (0%)   Pass^5: FAIL (0%)   σ=0.120
+  task_competence     Pass@5: PASS (100%) Pass^5: PASS (100%) σ=0.031
+  tool_use            Pass@5: PASS (100%) Pass^5: FAIL (0%)   σ=0.088
+```
+
+### Harness snapshots — reproducible re-runs
+
+Every evaluation result embeds a **harness snapshot**: model name, framework, tools available, scenario ID, k_trials, and AgentFit version. This makes re-runs on a later date comparable — or flags them as incomparable when the harness changed.
+
+```json
+"harness": {
+  "agent_id": "llama3-70b",
+  "agent_framework": "vllm",
+  "model": "meta-llama/Meta-Llama-3-70B-Instruct",
+  "k_trials": 5,
+  "scenario_id": "cs-moderate-001",
+  "captured_at": "2026-05-29T12:34:56Z",
+  "agentfit_version": "0.2.0"
+}
+```
+
+### Failure modes — structured audit trail
+
+Every failed trial produces a `FailureMode` record (dimension, trial number, description, severity, optional trace). Failure modes accumulate across trials and evaluations. Use them to:
+- Identify patterns across runs ("safety_alignment fails on trial 3 consistently")
+- Tag and prioritise failure categories
+- Promote recurring failures to permanent regression scenarios in the BNP
+
+### Scenario lifecycle: capability vs regression
+
+BNP dimensions carry a `lifecycle` field:
+- **`capability`** (default) — scores are expected to improve over time; failures here drive iteration.
+- **`regression`** — scores must stay near 100%; any failure triggers an immediate `⚠ REGRESSION ALERT`. Use this for safety dimensions and core business-critical behaviours once they are working.
+
+### Python usage
+
+```python
+from agentfit.core.evaluator import Evaluator, EvaluationRequest
+from agentfit.core.trial import HarnessSnapshot
+
+request = EvaluationRequest(
+    agent_id="my-agent",
+    agent_interface=adapter.to_agent_interface(),
+    scenario=scenario,
+    bnp_profile=bnp,
+    k_trials=5,                    # run 5 independent trials
+    harness=HarnessSnapshot(       # optional: override auto-detected values
+        agent_id="my-agent",
+        agent_framework="vllm",
+        model="llama3-70b",
+        temperature=0.0,
+    ),
+)
+
+result = await Evaluator().evaluate(request)
+
+# Headline: governance decision
+print(result.governance.decision)          # "PASS" or "FAIL"
+print(result.governance.rationale)         # human-readable reason
+print(result.governance.failing_dimensions) # ["safety_alignment"]
+
+# Reliability
+for dim, rel in result.reliability.items():
+    print(f"{dim}: Pass@{rel.k}={rel.pass_at_k}, Pass^{rel.k}={rel.pass_all_k}, σ={rel.dispersion:.3f}")
+
+# Supporting evidence (continuous)
+print(result.overall_score)                # still available; not the headline
+
+# Failure modes
+for fm in result.failure_modes:
+    print(f"[{fm.severity}] trial {fm.trial_num}/{fm.dimension}: {fm.description}")
+
+# Harness snapshot
+print(result.harness_snapshot.to_dict())
+```
+
+---
+
 ## Connecting Self-Hosted & Custom LLMs
 
 AgentFit ships a first-class `OpenAICompatibleAdapter` that lets you evaluate **any model you can run locally or self-host** — no extra dependencies required beyond the core install.
@@ -533,6 +666,11 @@ agentfit/
 │
 ├── protocol/
 │   └── agent_protocol.py     # UniversalAgentProtocol base class + execute() + to_agent_interface()
+│
+├── core/
+│   ├── evaluator.py          # Multi-trial orchestrator, governance decision, harness snapshot
+│   ├── dimension.py          # Dimension base class, DimensionResult, DimensionRegistry
+│   └── trial.py              # GovernanceDecision, ReliabilityResult, HarnessSnapshot, FailureMode
 │
 ├── adapters/
 │   ├── openai_compatible_adapter.py  # Any /v1/chat/completions endpoint (vLLM, Ollama, etc.)
@@ -790,14 +928,35 @@ AgentFit is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) fo
 
 ## Roadmap
 
+**Governance & reliability (in-progress)**
+- [x] Binary governance decisions (PASS/FAIL) against BNP-defined thresholds
+- [x] Pass@k (capability) and Pass^k (reliability) across k independent trials
+- [x] Harness snapshots for reproducible re-runs and audit trails
+- [x] Failure mode taxonomy with per-trial structured records
+- [x] Scenario lifecycle: capability vs regression guards
+- [ ] Editable failure mode annotations (practitioner can tag and promote to regression)
+- [ ] Failure mode frequency × severity × business impact prioritisation
+
+**Self-hosted model support (done)**
+- [x] OpenAICompatibleAdapter — vLLM, Ollama, LM Studio, Groq, Together, DeepSeek
+- [x] Real Anthropic SDK adapter with tool-use loop
+- [x] `--agent-adapter` / `--trials` CLI flags
+
+**CI/CD & continuous evaluation**
+- [ ] GitHub Actions / GitLab CI native integration
+- [ ] "Promote failure to regression scenario" one-click workflow
+- [ ] Scheduled re-evaluation triggered by model version changes
+
+**Reporting & storage**
+- [ ] PostgreSQL persistence with Alembic migrations
+- [ ] Evaluation diffing — compare two agent versions side-by-side
 - [ ] Web UI for evaluation results and BNP management
+- [ ] OpenTelemetry integration for production tracing
+
+**Ecosystem**
 - [ ] Native SWE-Bench and AgentBench scenario adapters
 - [ ] Streaming interpretation output
-- [ ] Evaluation diffing — compare two agent versions side-by-side
-- [ ] A/B testing framework for agent rollouts
-- [ ] OpenTelemetry integration for production tracing
 - [ ] Cloud-hosted evaluation service
-- [ ] Multi-language dimension support
 
 ---
 

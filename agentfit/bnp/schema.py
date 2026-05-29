@@ -84,14 +84,40 @@ class AgentRequirement:
 
 @dataclass
 class DimensionWeight:
-    """Evaluation dimension with weighting."""
+    """
+    Evaluation dimension with weighting and governance thresholds.
+
+    pass_threshold   — minimum score required to PASS this dimension.
+                       The governance decision is FAIL if any required
+                       dimension falls below its threshold.
+
+    reliability_mode — "pass_at_k": capability check (at least one of k
+                       trials passes).  Use for human-in-the-loop workflows.
+                       "pass_all_k": reliability check (every trial passes).
+                       Required for autonomous / no-human-review workflows.
+
+    lifecycle        — "capability": scores are expected to improve over time;
+                       failures here drive iteration.
+                       "regression": scores must stay near 100%; any failure
+                       is an alert — the agent has regressed.
+    """
+
     dimension: str
     weight: float
     config: Dict[str, Any] = field(default_factory=dict)
-    
+    pass_threshold: float = 0.70          # minimum score to PASS
+    reliability_mode: str = "pass_at_k"  # "pass_at_k" | "pass_all_k"
+    lifecycle: str = "capability"         # "capability" | "regression"
+
     def __post_init__(self):
         if not 0.0 <= self.weight <= 1.0:
             raise ValueError("weight must be between 0.0 and 1.0")
+        if not 0.0 <= self.pass_threshold <= 1.0:
+            raise ValueError("pass_threshold must be between 0.0 and 1.0")
+        if self.reliability_mode not in ("pass_at_k", "pass_all_k"):
+            raise ValueError("reliability_mode must be 'pass_at_k' or 'pass_all_k'")
+        if self.lifecycle not in ("capability", "regression"):
+            raise ValueError("lifecycle must be 'capability' or 'regression'")
 
 
 @dataclass(init=False)
@@ -130,7 +156,12 @@ class BNPProfile:
     max_latency_ms: Optional[int] = None
     max_errors_per_task: Optional[int] = None
     compliance_requirements: List[str] = field(default_factory=list)
-    
+
+    # Reliability — number of independent trials to run per evaluation.
+    # k_trials=1 preserves existing single-run behaviour.
+    # k_trials≥2 enables Pass@k / Pass^k reliability reporting.
+    k_trials: int = 1
+
     # Metadata
     tags: List[str] = field(default_factory=list)
     custom_metadata: Dict[str, Any] = field(default_factory=dict)
@@ -154,6 +185,7 @@ class BNPProfile:
         max_latency_ms: Optional[int] = None,
         max_errors_per_task: Optional[int] = None,
         compliance_requirements: Optional[List[str]] = None,
+        k_trials: int = 1,
         tags: Optional[List[str]] = None,
         custom_metadata: Optional[Dict[str, Any]] = None,
         *,
@@ -179,6 +211,7 @@ class BNPProfile:
         self.max_latency_ms = max_latency_ms
         self.max_errors_per_task = max_errors_per_task
         self.compliance_requirements = list(compliance_requirements or [])
+        self.k_trials = max(1, k_trials)
         self.tags = list(tags or [])
         self.custom_metadata = dict(custom_metadata or {})
 
@@ -210,7 +243,19 @@ class BNPProfile:
     def get_dimension_weights(self) -> Dict[str, float]:
         """Get dimension name to weight mapping."""
         return {d.dimension: d.weight for d in self.evaluation_dimensions}
-    
+
+    def get_dimension_thresholds(self) -> Dict[str, float]:
+        """Return per-dimension pass_threshold map."""
+        return {d.dimension: d.pass_threshold for d in self.evaluation_dimensions}
+
+    def get_dimension_reliability_modes(self) -> Dict[str, str]:
+        """Return per-dimension reliability_mode map."""
+        return {d.dimension: d.reliability_mode for d in self.evaluation_dimensions}
+
+    def get_dimension_lifecycles(self) -> Dict[str, str]:
+        """Return per-dimension lifecycle map."""
+        return {d.dimension: d.lifecycle for d in self.evaluation_dimensions}
+
     def get_dimension_config(self, dimension: str) -> Dict[str, Any]:
         """Get configuration for a specific dimension."""
         for d in self.evaluation_dimensions:

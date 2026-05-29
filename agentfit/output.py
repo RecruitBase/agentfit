@@ -1,15 +1,24 @@
 """
 Result Output Handler.
 
-Serializes evaluation results to JSON/YAML formats with human-readable reporting.
-Handles file writing with directory creation and formatting options.
+Serializes evaluation results to JSON/YAML and produces governance-first
+human-readable reports.
+
+Report hierarchy (research-grounded):
+  1. GOVERNANCE DECISION  — headline binary: PASS / FAIL + which dims failed
+  2. RELIABILITY          — Pass@k / Pass^k when k_trials > 1
+  3. DIMENSION THRESHOLDS — per-dimension threshold vs actual score
+  4. SUB-METRIC EVIDENCE  — continuous scores as supporting evidence
+  5. FAILURE MODES        — structured per-trial failure records
+  6. INTERPRETATION       — LLM-grounded narrative (when enabled)
+  7. HARNESS SNAPSHOT     — versioned eval environment for audit trail
 """
 
 import json
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from agentfit.core.evaluator import EvaluationResult
 from agentfit.bnp.schema import BNPProfile
@@ -17,19 +26,16 @@ from agentfit.bnp.schema import BNPProfile
 
 class OutputFormatter:
     """Format and output evaluation results."""
-    
+
     @staticmethod
-    def result_to_dict(result: EvaluationResult, bnp_profile: Optional[BNPProfile] = None) -> Dict[str, Any]:
-        """Convert evaluation result to dictionary for serialization.
-        
-        Args:
-            result: EvaluationResult object
-            bnp_profile: Optional BNP profile for context
-            
-        Returns:
-            Dictionary representation of results
-        """
-        output = {
+    def result_to_dict(
+        result: EvaluationResult,
+        bnp_profile: Optional[BNPProfile] = None,
+    ) -> Dict[str, Any]:
+        output: Dict[str, Any] = {
+            # ── Governance decision (headline) ────────────────────────────
+            "governance": result.governance.to_dict() if result.governance else None,
+            # ── Evaluation metadata ───────────────────────────────────────
             "evaluation": {
                 "id": result.id,
                 "agent_id": result.agent_id,
@@ -37,17 +43,22 @@ class OutputFormatter:
                 "created_at": result.created_at,
                 "completed_at": result.completed_at,
                 "total_duration_ms": result.total_duration_ms,
+                # Continuous score kept as supporting evidence, not headline
                 "overall_score": result.overall_score,
                 "passed": result.passed,
             },
-            "dimensions": {},
+            # ── Reliability (populated when k_trials > 1) ─────────────────
+            "reliability": {k: v.to_dict() for k, v in result.reliability.items()},
+            # ── Per-dimension results (sub-metric evidence) ────────────────
+            "dimensions": {
+                k: v.to_dict() for k, v in result.dimension_results.items()
+            },
+            # ── Failure modes ─────────────────────────────────────────────
+            "failure_modes": [f.to_dict() for f in result.failure_modes],
+            # ── Harness snapshot ──────────────────────────────────────────
+            "harness": result.harness_snapshot.to_dict() if result.harness_snapshot else None,
         }
-        
-        # Add dimension results
-        for dim_id, dim_result in result.dimension_results.items():
-            output["dimensions"][dim_id] = dim_result.to_dict()
-        
-        # Add BNP profile metadata if available
+
         if bnp_profile:
             output["profile"] = {
                 "name": bnp_profile.name,
@@ -55,236 +66,250 @@ class OutputFormatter:
                 "domain": bnp_profile.domain,
                 "description": bnp_profile.description,
                 "task_complexity": bnp_profile.task_complexity,
+                "k_trials": bnp_profile.k_trials,
             }
-        
-        # Add interpretation if present
+
         if result.interpretation is not None:
             output["interpretation"] = result.interpretation.to_dict()
-        
+
         return output
-    
+
     @staticmethod
-    def to_json(result: EvaluationResult, bnp_profile: Optional[BNPProfile] = None, indent: int = 2) -> str:
-        """Convert result to JSON string.
-        
-        Args:
-            result: EvaluationResult object
-            bnp_profile: Optional BNP profile
-            indent: JSON indentation level
-            
-        Returns:
-            JSON string
-        """
-        data = OutputFormatter.result_to_dict(result, bnp_profile)
-        return json.dumps(data, indent=indent, default=str)
-    
+    def to_json(
+        result: EvaluationResult,
+        bnp_profile: Optional[BNPProfile] = None,
+        indent: int = 2,
+    ) -> str:
+        return json.dumps(
+            OutputFormatter.result_to_dict(result, bnp_profile),
+            indent=indent,
+            default=str,
+        )
+
     @staticmethod
-    def to_yaml(result: EvaluationResult, bnp_profile: Optional[BNPProfile] = None) -> str:
-        """Convert result to YAML string.
-        
-        Args:
-            result: EvaluationResult object
-            bnp_profile: Optional BNP profile
-            
-        Returns:
-            YAML string
-        """
-        data = OutputFormatter.result_to_dict(result, bnp_profile)
-        return yaml.dump(data, default_flow_style=False, sort_keys=False)
-    
+    def to_yaml(
+        result: EvaluationResult,
+        bnp_profile: Optional[BNPProfile] = None,
+    ) -> str:
+        return yaml.dump(
+            OutputFormatter.result_to_dict(result, bnp_profile),
+            default_flow_style=False,
+            sort_keys=False,
+        )
+
     @staticmethod
     def write_to_file(
         result: EvaluationResult,
         output_path: str,
         format: str = "json",
-        bnp_profile: Optional[BNPProfile] = None
+        bnp_profile: Optional[BNPProfile] = None,
     ) -> Path:
-        """Write evaluation results to file.
-        
-        Args:
-            result: EvaluationResult object
-            output_path: Path to write results to
-            format: Output format (json or yaml)
-            bnp_profile: Optional BNP profile
-            
-        Returns:
-            Path object of written file
-            
-        Raises:
-            ValueError: If format is not supported
-            IOError: If file writing fails
-        """
-        output_path = Path(output_path)
-        
-        # Create directories if needed
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Determine format
-        format = format.lower().strip()
-        if format not in ["json", "yaml", "yml"]:
-            raise ValueError(f"Unsupported format: {format}. Choose 'json' or 'yaml'")
-        
-        # Serialize based on format
-        if format == "json":
-            content = OutputFormatter.to_json(result, bnp_profile)
-        else:  # yaml or yml
-            content = OutputFormatter.to_yaml(result, bnp_profile)
-        
-        # Write to file
-        output_path.write_text(content)
-        
-        return output_path
+        p = Path(output_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fmt = format.lower().strip()
+        if fmt not in ("json", "yaml", "yml"):
+            raise ValueError(f"Unsupported format: {fmt}. Choose 'json' or 'yaml'")
+        content = (
+            OutputFormatter.to_json(result, bnp_profile)
+            if fmt == "json"
+            else OutputFormatter.to_yaml(result, bnp_profile)
+        )
+        p.write_text(content)
+        return p
 
 
 class ReportGenerator:
-    """Generate human-readable evaluation reports."""
-    
-    @staticmethod
-    def generate_summary(result: EvaluationResult, bnp_profile: Optional[BNPProfile] = None) -> str:
-        """Generate a human-readable summary of evaluation results.
-        
-        Args:
-            result: EvaluationResult object
-            bnp_profile: Optional BNP profile
-            
-        Returns:
-            Formatted summary string
-        """
-        lines = []
-        
-        # Header
-        lines.append("=" * 80)
-        lines.append("AGENTFIT EVALUATION REPORT")
-        lines.append("=" * 80)
-        lines.append("")
-        
-        # Metadata
-        lines.append("EVALUATION METADATA")
-        lines.append("-" * 40)
-        lines.append(f"Evaluation ID: {result.id}")
-        lines.append(f"Agent ID: {result.agent_id}")
-        lines.append(f"Scenario ID: {result.scenario_id}")
-        lines.append(f"Created: {result.created_at}")
-        if result.completed_at:
-            lines.append(f"Completed: {result.completed_at}")
-        lines.append(f"Duration: {result.total_duration_ms:.2f}ms")
-        lines.append("")
-        
-        # Profile information
-        if bnp_profile:
-            lines.append("PROFILE INFORMATION")
-            lines.append("-" * 40)
-            lines.append(f"Name: {bnp_profile.name}")
-            lines.append(f"Organization: {bnp_profile.organization}")
-            lines.append(f"Domain: {bnp_profile.domain}")
-            lines.append(f"Description: {bnp_profile.description}")
-            lines.append(f"Task Complexity: {bnp_profile.task_complexity}")
-            lines.append("")
-        
-        # Overall results
-        lines.append("OVERALL RESULTS")
-        lines.append("-" * 40)
-        lines.append(f"Overall Score: {result.overall_score:.2f} / 1.0 ({result.overall_score*100:.1f}%)")
-        lines.append(f"Status: {'PASSED' if result.passed else 'FAILED'}")
-        lines.append("")
-        
-        # Dimension results
-        lines.append("DIMENSION RESULTS")
-        lines.append("-" * 40)
+    """Produce governance-first human-readable evaluation reports."""
 
-        # Pre-fetch interpretation data if available
+    @staticmethod
+    def generate_summary(
+        result: EvaluationResult,
+        bnp_profile: Optional[BNPProfile] = None,
+    ) -> str:
+        lines: list[str] = []
+        W = 80
+
+        def rule(char="="):
+            lines.append(char * W)
+
+        def section(title: str):
+            lines.append("")
+            lines.append(title)
+            lines.append("-" * 40)
+
+        rule()
+        lines.append("AGENTFIT EVALUATION REPORT")
+        rule()
+
+        # ── 1. GOVERNANCE DECISION (headline) ─────────────────────────────
+        gov = result.governance
+        if gov:
+            lines.append("")
+            if gov.passed:
+                lines.append("  GOVERNANCE DECISION:  ✓ PASS")
+            else:
+                lines.append("  GOVERNANCE DECISION:  ✗ FAIL")
+            lines.append(f"  {gov.rationale}")
+
+            if gov.regression_failures:
+                lines.append(
+                    f"  ⚠  REGRESSION ALERT: {', '.join(gov.regression_failures)}"
+                )
+        else:
+            lines.append("")
+            lines.append(f"  STATUS: {'✓ PASSED' if result.passed else '✗ FAILED'}")
+
+        # ── 2. RELIABILITY (only when k > 1) ──────────────────────────────
+        if result.reliability:
+            section("RELIABILITY")
+            k_val = next(iter(result.reliability.values())).k
+            lines.append(f"  Trials run: {k_val}")
+            lines.append(
+                f"  {'Dimension':<35} {'Pass@k':<12} {'Pass^k':<12} {'σ':<8}"
+            )
+            lines.append("  " + "-" * 68)
+            for dim_id, rel in result.reliability.items():
+                rel_mode = "pass_all_k"
+                if bnp_profile:
+                    rel_mode = bnp_profile.get_dimension_reliability_modes().get(
+                        dim_id, "pass_at_k"
+                    )
+                binding = rel.reliability_label(rel_mode)
+                lines.append(
+                    f"  {dim_id:<35} "
+                    f"{'PASS' if rel.pass_at_k == 1.0 else 'FAIL':<12} "
+                    f"{'PASS' if rel.pass_all_k == 1.0 else 'FAIL':<12} "
+                    f"{rel.dispersion:<8.3f}"
+                    f"  [binding: {binding}]"
+                )
+
+        # ── 3. THRESHOLD RESULTS ───────────────────────────────────────────
+        if gov and gov.threshold_results:
+            section("DIMENSION THRESHOLDS")
+            lines.append(
+                f"  {'Dimension':<35} {'Score':<8} {'Threshold':<12} {'Status':<8} {'Lifecycle'}"
+            )
+            lines.append("  " + "-" * 72)
+            for dim_id, tr in gov.threshold_results.items():
+                status = "✓ PASS" if tr.met else "✗ FAIL"
+                lifecycle_tag = " ⚠ REGRESSION" if tr.is_regression_failure else ""
+                lines.append(
+                    f"  {dim_id:<35} {tr.score:<8.2f} {tr.threshold:<12.2f} "
+                    f"{status:<8} {tr.lifecycle}{lifecycle_tag}"
+                )
+
+        # ── 4. SUB-METRIC EVIDENCE ─────────────────────────────────────────
+        section("SUB-METRIC EVIDENCE")
         dim_interps = {}
         if result.interpretation and result.interpretation.dimension_interpretations:
             dim_interps = result.interpretation.dimension_interpretations
 
-        for dim_id, dim_result in result.dimension_results.items():
-            percentage = dim_result.get_percentage()
-            status = "✓" if dim_result.passed else "✗"
-            lines.append(f"{status} {dim_result.dimension_name} ({dim_id})")
-            lines.append(f"  Score: {dim_result.score:.2f} / {dim_result.max_score} ({percentage:.1f}%)")
-            lines.append(f"  Scoring Method: {dim_result.scoring_method.value}")
-            lines.append(f"  Duration: {dim_result.execution_time_ms:.2f}ms")
-            
-            if dim_result.feedback:
-                lines.append(f"  Feedback: {dim_result.feedback}")
-            
-            if dim_result.error:
-                lines.append(f"  Error: {dim_result.error}")
-            
-            if dim_result.metrics:
-                lines.append("  Metrics:")
-                for metric in dim_result.metrics:
-                    metric_pct = metric.to_percentage()
-                    lines.append(f"    - {metric.name}: {metric.value}/{metric.max_value} ({metric_pct:.1f}%)")
-
-            # Inline interpretation for this dimension
+        for dim_id, dr in result.dimension_results.items():
+            status = "✓" if dr.passed else "✗"
+            lines.append(f"  {status} {dr.dimension_name} ({dim_id})")
+            lines.append(
+                f"    Score: {dr.score:.2f} / {dr.max_score}  "
+                f"({dr.get_percentage():.1f}%)  "
+                f"[{dr.scoring_method.value}]  "
+                f"{dr.execution_time_ms:.1f}ms"
+            )
+            if dr.feedback:
+                lines.append(f"    Feedback: {dr.feedback}")
+            if dr.metrics:
+                for m in dr.metrics:
+                    weight = m.metadata.get("weight", "")
+                    w_str = f"  weight={weight}" if weight else ""
+                    lines.append(
+                        f"      {m.name:<30} {m.value:.3f}/{m.max_value}{w_str}"
+                    )
             if dim_id in dim_interps:
                 interp = dim_interps[dim_id]
-                lines.append(f"  Interpretation: {interp.summary}")
-                if interp.explanation:
-                    for line in interp.explanation.split(". "):
-                        line = line.strip()
-                        if line:
-                            lines.append(f"    {line}.")
+                lines.append(f"    Interpretation: {interp.summary}")
                 if interp.strengths:
-                    lines.append("  Strengths:")
                     for s in interp.strengths:
-                        lines.append(f"    + {s}")
+                        lines.append(f"      + {s}")
                 if interp.weaknesses:
-                    lines.append("  Weaknesses:")
                     for w in interp.weaknesses:
-                        lines.append(f"    - {w}")
-            
-            lines.append("")
-        
-        # Overall interpretation section
-        if result.interpretation and result.interpretation.overall_interpretation:
-            overall = result.interpretation.overall_interpretation
-            lines.append("OVERALL INTERPRETATION")
-            lines.append("-" * 40)
-            lines.append(f"Summary: {overall.summary}")
-            if overall.explanation:
-                lines.append(f"Analysis: {overall.explanation}")
-            lines.append(f"Verdict: {overall.verdict}")
-            if overall.strengths:
-                lines.append("Strengths:")
-                for s in overall.strengths:
-                    lines.append(f"  + {s}")
-            if overall.weaknesses:
-                lines.append("Weaknesses:")
-                for w in overall.weaknesses:
-                    lines.append(f"  - {w}")
+                        lines.append(f"      - {w}")
             lines.append("")
 
-        # Recommendations section
-        if result.interpretation and result.interpretation.recommendations:
-            lines.append("RECOMMENDATIONS")
-            lines.append("-" * 40)
-            for i, rec in enumerate(result.interpretation.recommendations, 1):
-                priority_tag = f"[{rec.priority.upper()}]"
-                lines.append(f"  {i}. {priority_tag} {rec.area}")
-                lines.append(f"     {rec.suggestion}")
-            lines.append("")
-
-        # Footer
-        lines.append("=" * 80)
-        lines.append(f"Report generated: {datetime.utcnow().isoformat()}")
-        if result.interpretation:
+        # ── 5. FAILURE MODES ───────────────────────────────────────────────
+        if result.failure_modes:
+            section("FAILURE MODES")
             lines.append(
-                f"Interpretation by: {result.interpretation.provider} "
-                f"({result.interpretation.model}) in "
-                f"{result.interpretation.interpretation_time_ms:.0f}ms"
+                f"  {len(result.failure_modes)} failure(s) recorded across trials."
             )
-        lines.append("=" * 80)
-        
+            for fm in result.failure_modes[:10]:  # cap at 10 in report
+                lines.append(
+                    f"  [{fm.severity.upper()}] trial {fm.trial_num} "
+                    f"/ {fm.dimension}: {fm.description[:80]}"
+                )
+            if len(result.failure_modes) > 10:
+                lines.append(
+                    f"  … and {len(result.failure_modes) - 10} more "
+                    "(see full JSON output)"
+                )
+
+        # ── 6. INTERPRETATION ──────────────────────────────────────────────
+        if result.interpretation:
+            interp = result.interpretation
+            if interp.overall_interpretation:
+                section("OVERALL INTERPRETATION")
+                oi = interp.overall_interpretation
+                lines.append(f"  {oi.summary}")
+                if oi.explanation:
+                    lines.append(f"  {oi.explanation}")
+                lines.append(f"  Verdict: {oi.verdict}")
+                if oi.strengths:
+                    for s in oi.strengths:
+                        lines.append(f"    + {s}")
+                if oi.weaknesses:
+                    for w in oi.weaknesses:
+                        lines.append(f"    - {w}")
+
+            if interp.recommendations:
+                section("RECOMMENDATIONS")
+                for i, rec in enumerate(interp.recommendations, 1):
+                    lines.append(f"  {i}. [{rec.priority.upper()}] {rec.area}")
+                    lines.append(f"     {rec.suggestion}")
+
+        # ── 7. HARNESS SNAPSHOT ────────────────────────────────────────────
+        if result.harness_snapshot:
+            hs = result.harness_snapshot
+            section("HARNESS SNAPSHOT  (audit trail)")
+            lines.append(f"  Agent:     {hs.agent_id}  [{hs.agent_framework}]")
+            if hs.model:
+                lines.append(f"  Model:     {hs.model}")
+            if hs.temperature is not None:
+                lines.append(f"  Temp:      {hs.temperature}")
+            lines.append(f"  K trials:  {hs.k_trials}")
+            lines.append(f"  Scenario:  {hs.scenario_id}")
+            lines.append(f"  Captured:  {hs.captured_at}")
+            lines.append(f"  AgentFit:  v{hs.agentfit_version}")
+
+        # ── Footer ────────────────────────────────────────────────────────
+        lines.append("")
+        rule()
+        lines.append(
+            f"Report generated: {datetime.now(timezone.utc).isoformat()}"
+        )
+        if result.interpretation:
+            i = result.interpretation
+            lines.append(
+                f"Interpretation: {i.provider} ({i.model}) "
+                f"in {i.interpretation_time_ms:.0f}ms"
+            )
+        lines.append(
+            f"Supporting score: {result.overall_score:.2f} / 1.0  "
+            "(use governance decision, not this float, for deploy/block)"
+        )
+        rule()
+
         return "\n".join(lines)
-    
+
     @staticmethod
-    def print_summary(result: EvaluationResult, bnp_profile: Optional[BNPProfile] = None) -> None:
-        """Print evaluation summary to stdout.
-        
-        Args:
-            result: EvaluationResult object
-            bnp_profile: Optional BNP profile
-        """
+    def print_summary(
+        result: EvaluationResult,
+        bnp_profile: Optional[BNPProfile] = None,
+    ) -> None:
         print(ReportGenerator.generate_summary(result, bnp_profile))

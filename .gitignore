@@ -16,3 +16,6 @@ tests/test_bnp.pyc
 tests/test_dimensions.pyc
 tests/test_adapters.pyc
 results_interpreted.json
+
+Eval Server/
+Eval Dashboard/

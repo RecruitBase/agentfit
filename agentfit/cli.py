@@ -229,6 +229,17 @@ def main():
     help="Mock agent behavior mode (only used when --agent-adapter mock)."
 )
 @click.option(
+    "--trials",
+    "k_trials",
+    type=int,
+    default=None,
+    help=(
+        "Number of independent evaluation trials (default: 1 or BNP k_trials). "
+        "k>1 enables Pass@k (capability) and Pass^k (reliability) statistics. "
+        "Use k=5 or k=10 for autonomous-workflow governance decisions."
+    ),
+)
+@click.option(
     "--interpret",
     is_flag=True,
     default=False,
@@ -290,6 +301,7 @@ def evaluate(
     success_rate: float,
     mock_seed: Optional[int],
     mock_behavior: str,
+    k_trials: Optional[int],
     interpret: bool,
     provider: str,
     api_key: Optional[str],
@@ -440,6 +452,13 @@ def evaluate(
                 f"({resolved_model}){base_info}"
             )
         
+        if k_trials is not None:
+            k_display = f"{k_trials} trial{'s' if k_trials != 1 else ''}"
+            click.echo(
+                f"🔁 Reliability mode: {k_display} "
+                f"(Pass@{k_trials} + Pass^{k_trials} will be computed)"
+            )
+
         # Create evaluation request
         evaluation_request = EvaluationRequest(
             agent_id=agent_id,
@@ -449,6 +468,7 @@ def evaluate(
             dimensions=dimensions,
             context={"verbose": verbose},
             interpretability=interp_config,
+            k_trials=k_trials,
         )
         
         # Run evaluation
@@ -472,12 +492,24 @@ def evaluate(
         click.echo("")
         ReportGenerator.print_summary(result, bnp_profile)
         
-        # Final status
+        # Final governance decision
         click.echo("")
-        if result.passed:
-            click.secho("✓ Evaluation PASSED", fg="green", bold=True)
+        if result.governance:
+            if result.governance.passed:
+                click.secho(
+                    f"✓ GOVERNANCE DECISION: PASS  — {result.governance.rationale}",
+                    fg="green", bold=True,
+                )
+            else:
+                click.secho(
+                    f"✗ GOVERNANCE DECISION: FAIL  — {result.governance.rationale}",
+                    fg="red", bold=True,
+                )
         else:
-            click.secho("✗ Evaluation FAILED", fg="red", bold=True)
+            if result.passed:
+                click.secho("✓ Evaluation PASSED", fg="green", bold=True)
+            else:
+                click.secho("✗ Evaluation FAILED", fg="red", bold=True)
         
         click.echo(f"📄 Results written to: {output}")
         

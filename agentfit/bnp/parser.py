@@ -181,35 +181,41 @@ class BNPParser:
     
     @staticmethod
     def _parse_evaluation_setup(content: str, profile: BNPProfile) -> None:
-        """Parse evaluation configuration section."""
+        """
+        Parse evaluation configuration section.
+
+        Supported formats for dimensions:
+          - task_competence: 0.4
+          - task_competence: 0.4, threshold: 0.80
+          - safety_alignment: 0.3, threshold: 0.95, reliability: pass_all_k
+          - tool_use: 0.3, threshold: 0.85, lifecycle: regression
+        """
         in_dimensions = False
-        
+
         for line in content.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            
+
             if line.startswith("- Complexity:"):
                 complexity_str = line.split(":", 1)[1].strip().lower()
                 try:
                     profile.task_complexity = TaskComplexity(complexity_str)
                 except ValueError:
                     profile.task_complexity = TaskComplexity.MODERATE
-            
+
+            elif line.startswith("- K Trials:") or line.startswith("- k_trials:"):
+                try:
+                    profile.k_trials = max(1, int(line.split(":", 1)[1].strip()))
+                except ValueError:
+                    pass
+
             elif line.startswith("- Dimensions:"):
                 in_dimensions = True
+
             elif in_dimensions and line.startswith("- "):
-                # Parse: dimension_name: weight
-                parts = line[2:].split(":")
-                if len(parts) == 2:
-                    dim_name = parts[0].strip()
-                    try:
-                        weight = float(parts[1].strip())
-                        profile.evaluation_dimensions.append(
-                            DimensionWeight(dimension=dim_name, weight=weight)
-                        )
-                    except ValueError:
-                        pass
+                _parse_dimension_line(line[2:], profile)
+
             elif in_dimensions and not line.startswith("- "):
                 in_dimensions = False
     
@@ -242,6 +248,67 @@ class BNPParser:
             if line.startswith("- "):
                 requirement = line[2:].strip()
                 profile.compliance_requirements.append(requirement)
+
+
+def _parse_dimension_line(text: str, profile: BNPProfile) -> None:
+    """
+    Parse a single dimension entry from the Evaluation Setup section.
+
+    Supported formats (all backward-compatible):
+        task_competence: 0.4
+        task_competence: 0.4, threshold: 0.80
+        safety_alignment: 0.3, threshold: 0.95, reliability: pass_all_k
+        tool_use: 0.3, threshold: 0.85, lifecycle: regression
+    """
+    # Split on first colon to get name, rest is everything after
+    colon = text.find(":")
+    if colon == -1:
+        return
+
+    dim_name = text[:colon].strip()
+    rest = text[colon + 1:].strip()
+
+    # rest may be: "0.4" or "0.4, threshold: 0.80, reliability: pass_all_k"
+    # Split on commas, first token is weight, rest are key:value pairs
+    parts = [p.strip() for p in rest.split(",")]
+    if not parts:
+        return
+
+    try:
+        weight = float(parts[0])
+    except ValueError:
+        return
+
+    threshold = 0.70
+    reliability_mode = "pass_at_k"
+    lifecycle = "capability"
+
+    for extra in parts[1:]:
+        if ":" not in extra:
+            continue
+        k, v = [x.strip() for x in extra.split(":", 1)]
+        k = k.lower()
+        if k == "threshold":
+            try:
+                threshold = float(v)
+            except ValueError:
+                pass
+        elif k in ("reliability", "reliability_mode"):
+            if v in ("pass_all_k", "pass_at_k"):
+                reliability_mode = v
+        elif k == "lifecycle":
+            if v in ("capability", "regression"):
+                lifecycle = v
+
+    profile.evaluation_dimensions.append(
+        DimensionWeight(
+            dimension=dim_name,
+            weight=weight,
+            pass_threshold=threshold,
+            reliability_mode=reliability_mode,
+            lifecycle=lifecycle,
+        )
+    )
 
 
 def _apply_frontmatter(profile: BNPProfile, frontmatter: Dict[str, Any]) -> None:

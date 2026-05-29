@@ -1,0 +1,54 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+*.whl
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Secrets / local config ────────────────────────────────────────────────────
+.env
+Eval Server/.env
+*.env.local
+*.env.*.local
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Dev tooling ───────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.pre-commit-config.yaml
+.mypy_cache/
+.ruff_cache/
+
+# ── Docs / examples (not needed at runtime) ──────────────────────────────────
+docs/
+examples/
+hooks/
+scripts/
+*.md
+!README.md
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
