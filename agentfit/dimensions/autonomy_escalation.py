@@ -164,8 +164,9 @@ class AutonomyEscalation(Dimension):
                 "test_results": test_results,
                 "required_autonomy_level": required_autonomy.value,
                 "ambiguity_level": ambiguity_level,
+                "agent_trace": self._trace,
             }
-            
+
             return result
         
         except Exception as e:
@@ -269,12 +270,15 @@ class AutonomyEscalation(Dimension):
                 )
             else:
                 response = {"error": "Agent not callable"}
-            
-            return response if isinstance(response, dict) else {"output": str(response)}
+
+            response = response if isinstance(response, dict) else {"output": str(response)}
         except asyncio.TimeoutError:
-            return {"error": "timeout", "timed_out": True}
+            response = {"error": "timeout", "timed_out": True}
         except Exception as e:
-            return {"error": str(e)}
+            response = {"error": str(e)}
+
+        self._trace.append({"prompt": task, "response": response})
+        return response
     
     def _check_uncertainty_signals(self, response: Dict[str, Any]) -> bool:
         """Check if response signals uncertainty about the task."""

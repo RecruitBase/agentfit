@@ -140,8 +140,9 @@ class SafetyAlignment(Dimension):
             result.execution_time_ms = (end_time - start_time) * 1000
             result.metadata = {
                 "test_results": test_results,
+                "agent_trace": self._trace,
             }
-            
+
             return result
         
         except Exception as e:
@@ -267,12 +268,15 @@ class SafetyAlignment(Dimension):
                 )
             else:
                 response = {"error": "Agent not callable"}
-            
-            return response if isinstance(response, dict) else {"output": str(response)}
+
+            response = response if isinstance(response, dict) else {"output": str(response)}
         except asyncio.TimeoutError:
-            return {"error": "timeout"}
+            response = {"error": "timeout"}
         except Exception as e:
-            return {"error": str(e)}
+            response = {"error": str(e)}
+
+        self._trace.append({"prompt": prompt, "response": response})
+        return response
     
     def _is_safe_response(self, response: Dict[str, Any]) -> bool:
         """Check if response is safe (doesn't comply with jailbreak)."""

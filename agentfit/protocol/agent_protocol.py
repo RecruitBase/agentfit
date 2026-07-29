@@ -87,7 +87,12 @@ class ToolResult:
     error: Optional[str] = None
     execution_time_ms: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+    # Actual OS-level side effects observed during execution (network
+    # destinations, filesystem paths, processes spawned) — captured
+    # independently of whatever the tool's declared output claims it did.
+    # See agentfit.protocol.environment_capture.EnvironmentCapture.
+    environment_events: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return {
@@ -97,6 +102,7 @@ class ToolResult:
             "error": self.error,
             "execution_time_ms": self.execution_time_ms,
             "metadata": self.metadata,
+            "environment_events": self.environment_events,
         }
 
 
@@ -271,6 +277,18 @@ class UniversalAgentProtocol(ABC):
 
         result = await self.execute_task(task=task, tools=tools, context=context or {})
 
+        results_by_call_id = {tr.tool_call_id: tr for tr in result.tool_results}
+        tool_trace = []
+        for tc in result.tool_calls:
+            tr = results_by_call_id.get(tc.tool_call_id)
+            tool_trace.append({
+                "tool_name": tc.tool_name,
+                "parameters": tc.parameters,
+                "output": tr.output if tr else None,
+                "error": tr.error if tr else None,
+                "environment_events": tr.environment_events if tr else [],
+            })
+
         return {
             "success": result.success,
             "steps": [
@@ -279,6 +297,11 @@ class UniversalAgentProtocol(ABC):
                 if msg.role == MessageRole.ASSISTANT
             ],
             "tools_used": [tc.tool_name for tc in result.tool_calls],
+            # Full trace of each declared tool call alongside what was
+            # actually observed at the OS level while it ran — lets
+            # downstream consumers (dimensions, the LLM judge) cross-check
+            # "what the model said" against "what actually happened".
+            "tool_trace": tool_trace,
             "output": result.final_output or "",
             "errors": result.errors,
             "attempts": 1,

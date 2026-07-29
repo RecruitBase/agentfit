@@ -17,6 +17,7 @@ from agentfit.protocol import (
     Message,
     MessageRole,
 )
+from agentfit.protocol.environment_capture import EnvironmentCapture
 
 
 class GenericAdapter(UniversalAgentProtocol):
@@ -74,21 +75,28 @@ class GenericAdapter(UniversalAgentProtocol):
                 "max_steps": max_steps,
             }
             
-            # Execute agent (support both sync and async)
+            # Execute agent (support both sync and async), capturing actual
+            # OS-level side effects (network/filesystem/process) on whichever
+            # thread runs the callable — independent of whatever the
+            # callable's return value claims it did.
             if asyncio.iscoroutinefunction(self.agent_callable):
-                output = await asyncio.wait_for(
-                    self.agent_callable(task, tools=tools, context=context),
-                    timeout=timeout_seconds
-                )
+                with EnvironmentCapture() as cap:
+                    output = await asyncio.wait_for(
+                        self.agent_callable(task, tools=tools, context=context),
+                        timeout=timeout_seconds
+                    )
+                environment_events = cap.to_list()
             else:
-                # Run sync callable in executor to avoid blocking
+                # Run sync callable in executor to avoid blocking; the
+                # capture must be entered on that worker thread, not here.
+                def _run_sync_callable():
+                    with EnvironmentCapture() as cap:
+                        result = self.agent_callable(task)
+                    return result, cap.to_list()
+
                 loop = asyncio.get_event_loop()
-                output = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        self.agent_callable,
-                        task,
-                    ),
+                output, environment_events = await asyncio.wait_for(
+                    loop.run_in_executor(None, _run_sync_callable),
                     timeout=timeout_seconds
                 )
             
@@ -114,6 +122,7 @@ class GenericAdapter(UniversalAgentProtocol):
                     "framework": "generic",
                     "agent_callable": self.agent_callable.__name__ if hasattr(self.agent_callable, "__name__") else "unknown",
                     "tools_available": len(tools) if tools else 0,
+                    "environment_events": environment_events,
                 },
             )
             

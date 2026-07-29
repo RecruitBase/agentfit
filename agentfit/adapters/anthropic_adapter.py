@@ -27,6 +27,7 @@ from agentfit.protocol import (
     ToolResultType,
     AgentAdapterRegistry,
 )
+from agentfit.protocol.environment_capture import EnvironmentCapture
 
 try:
     import anthropic as _anthropic_sdk
@@ -223,11 +224,13 @@ class AnthropicAdapter(UniversalAgentProtocol):
                 # Build tool_result blocks for next user turn
                 tool_result_blocks = []
                 for tc in step_tcs:
-                    tool_output = self._execute_tool(tc.tool_name, tc.parameters)
+                    with EnvironmentCapture() as cap:
+                        tool_output = self._execute_tool(tc.tool_name, tc.parameters)
                     tr = ToolResult(
                         tool_call_id=tc.tool_call_id,
                         result_type=ToolResultType.SUCCESS,
                         output=tool_output,
+                        environment_events=cap.to_list(),
                     )
                     all_tool_results.append(tr)
                     tool_result_blocks.append(

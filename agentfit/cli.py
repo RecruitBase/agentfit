@@ -43,11 +43,12 @@ _ADAPTER_CHOICES = [
     "groq",
     "together",
     "deepseek",
+    "custom_http",
 ]
 
-_ADAPTER_NEEDS_BASE_URL = {"openai_compatible", "vllm", "ollama", "lmstudio", "localai"}
+_ADAPTER_NEEDS_BASE_URL = {"openai_compatible", "vllm", "ollama", "lmstudio", "localai", "custom_http"}
 _ADAPTER_NEEDS_KEY = _ADAPTER_CHOICES[1:]  # everyone except "mock"
-_ADAPTER_NO_KEY = {"ollama", "localai"}     # servers that accept any/no key
+_ADAPTER_NO_KEY = {"ollama", "localai", "custom_http"}     # servers that accept any/no key
 
 
 def _build_real_adapter(
@@ -57,12 +58,17 @@ def _build_real_adapter(
     agent_model: Optional[str],
     agent_api_key: Optional[str],
     agent_base_url: Optional[str],
+    agent_request_body: Optional[str] = None,
+    agent_response_path: Optional[str] = None,
+    agent_headers: Optional[str] = None,
+    agent_method: str = "POST",
 ):
     """Instantiate the requested real adapter."""
     from agentfit.adapters import (
         OpenAICompatibleAdapter,
         OpenAIAdapter,
         AnthropicAdapter,
+        CustomHTTPAdapter,
     )
 
     if adapter == "openai":
@@ -79,6 +85,36 @@ def _build_real_adapter(
             agent_name=agent_name,
             model=agent_model or "claude-sonnet-4-6",
             api_key=agent_api_key,
+        )
+
+    if adapter == "custom_http":
+        body_template = json.loads(agent_request_body) if agent_request_body else {"input": "{task}"}
+        headers_template = json.loads(agent_headers) if agent_headers else {}
+
+        # --agent-response-path is either a plain dot-path string (single
+        # output field) or a JSON object mapping field name -> path (for
+        # agent architectures that expose multiple outputs — tool calls,
+        # tokens, model name — not just one answer string). A bare path
+        # like "choices.0.message.content" isn't valid JSON, so only treat
+        # it as a mapping when it actually parses to a dict.
+        response_path = agent_response_path
+        if agent_response_path:
+            try:
+                parsed_response_path = json.loads(agent_response_path)
+                if isinstance(parsed_response_path, dict):
+                    response_path = parsed_response_path
+            except json.JSONDecodeError:
+                pass
+
+        return CustomHTTPAdapter(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            base_url=agent_base_url,
+            request_body_template=body_template,
+            headers_template=headers_template,
+            api_key=agent_api_key,
+            response_path=response_path,
+            method=agent_method,
         )
 
     # All remaining are OpenAI-compatible endpoints
@@ -203,9 +239,63 @@ def main():
     type=str,
     default=None,
     help=(
-        "Base URL for the agent endpoint (required for openai_compatible / vllm / lmstudio). "
-        "Example: http://localhost:8000/v1"
+        "Base URL for the agent endpoint (required for openai_compatible / vllm / lmstudio / custom_http). "
+        "For custom_http this is the exact full URL to call (nothing is appended to it), "
+        "e.g. https://my-platform.example.com/api/workflows/<id>/execute"
     ),
+)
+@click.option(
+    "--agent-request-body",
+    "agent_request_body",
+    type=str,
+    default=None,
+    help=(
+        "[custom_http only] JSON request-body template. Any string containing the "
+        "literal token {task} has that token replaced with the task text "
+        "(substitution happens before JSON-encoding, so quotes/newlines in the task "
+        "are escaped automatically). Default: '{\"input\": \"{task}\"}'. "
+        "Example: --agent-request-body '{\"messages\": [{\"role\": \"user\", \"content\": \"{task}\"}]}'"
+    ),
+)
+@click.option(
+    "--agent-response-path",
+    "agent_response_path",
+    type=str,
+    default=None,
+    help=(
+        "[custom_http only] Where the agent's answer lives in the JSON response. "
+        "Two forms: (1) a plain dot-path, e.g. 'output' or 'choices.0.message.content' "
+        "(numeric segments index into lists; a literal flat key containing dots, e.g. "
+        "Sim.ai's 'agent1.content', also resolves directly — no need to know whether "
+        "the platform nests or flattens). (2) A JSON object mapping field name -> path, "
+        "for architectures that return multiple outputs (content, tool calls, tokens, "
+        "model, ...), e.g. --agent-response-path "
+        "'{\"output\": \"agent1.content\", \"tool_calls\": \"agent1.toolCalls\"}'. "
+        "Exactly one key must be named 'output' or 'final_output' — that one becomes "
+        "the evaluated answer; every extracted field is kept in "
+        "results.json under metadata.extracted_fields. If omitted, the whole "
+        "response body is used as the output."
+    ),
+)
+@click.option(
+    "--agent-headers",
+    "agent_headers",
+    type=str,
+    default=None,
+    help=(
+        "[custom_http only] JSON object of extra request headers. The literal token "
+        "{api_key} in any header value is replaced with --agent-api-key. "
+        "Example: --agent-headers '{\"x-api-key\": \"{api_key}\"}'. "
+        "Content-Type: application/json is added automatically if not set."
+    ),
+)
+@click.option(
+    "--agent-method",
+    "agent_method",
+    type=str,
+    default="POST",
+    show_default=True,
+    help="[custom_http only] HTTP method to use for the request.",
 )
 @click.option(
     "--success-rate",
@@ -298,6 +388,10 @@ def evaluate(
     agent_model: Optional[str],
     agent_api_key: Optional[str],
     agent_base_url: Optional[str],
+    agent_request_body: Optional[str],
+    agent_response_path: Optional[str],
+    agent_headers: Optional[str],
+    agent_method: str,
     success_rate: float,
     mock_seed: Optional[int],
     mock_behavior: str,
@@ -333,6 +427,16 @@ def evaluate(
     agentfit evaluate --bnp customer_bnp.md --output results.json \\
         --agent-adapter openai --agent-model gpt-4o --agent-api-key sk-... \\
         --interpret --provider openai --api-key sk-...
+
+    \b
+    # Custom REST endpoint (not OpenAI-shaped) — no Python required
+    agentfit evaluate --bnp customer_bnp.md --output results.json \\
+        --agent-adapter custom_http \\
+        --agent-base-url https://my-platform.example.com/api/workflows/abc/execute \\
+        --agent-request-body '{"input": "{task}"}' \\
+        --agent-headers '{"x-api-key": "{api_key}"}' \\
+        --agent-api-key sk-... \\
+        --agent-response-path output
     """
     
     # Setup logging
@@ -383,8 +487,8 @@ def evaluate(
         else:
             # Validate flags before building the adapter
             if agent_adapter in _ADAPTER_NEEDS_BASE_URL and not agent_base_url:
-                # Some have a sensible localhost default; vllm and openai_compatible don't
-                if agent_adapter in ("vllm", "openai_compatible"):
+                # Some have a sensible localhost default; vllm/openai_compatible/custom_http don't
+                if agent_adapter in ("vllm", "openai_compatible", "custom_http"):
                     click.secho(
                         f"✗ --agent-base-url is required for --agent-adapter {agent_adapter}. "
                         "Example: --agent-base-url http://localhost:8000/v1",
@@ -400,6 +504,39 @@ def evaluate(
                         fg="yellow",
                     )
 
+            if agent_adapter == "custom_http":
+                for flag_name, flag_value in (
+                    ("--agent-request-body", agent_request_body),
+                    ("--agent-headers", agent_headers),
+                ):
+                    if flag_value is None:
+                        continue
+                    try:
+                        json.loads(flag_value)
+                    except json.JSONDecodeError as e:
+                        click.secho(f"✗ {flag_name} is not valid JSON: {e}", fg="red")
+                        raise click.Exit(1)
+
+                # --agent-response-path may be a plain dot-path (not JSON, e.g.
+                # "choices.0.message.content") or a JSON object mapping field
+                # name -> path. Only flag it as broken when it clearly *looks*
+                # like an attempted JSON object (starts with '{') but fails to
+                # parse — a plain path is never expected to be valid JSON.
+                if agent_response_path and agent_response_path.strip().startswith("{"):
+                    try:
+                        parsed = json.loads(agent_response_path)
+                    except json.JSONDecodeError as e:
+                        click.secho(f"✗ --agent-response-path is not valid JSON: {e}", fg="red")
+                        raise click.Exit(1)
+                    if isinstance(parsed, dict) and not ({"output", "final_output"} & parsed.keys()):
+                        click.secho(
+                            "✗ --agent-response-path is a JSON object but has no "
+                            "'output' or 'final_output' key — add one so CustomHTTPAdapter "
+                            "knows which extracted field is the agent's answer.",
+                            fg="red",
+                        )
+                        raise click.Exit(1)
+
             click.echo(
                 f"🤖 Using {agent_adapter} adapter"
                 + (f" → {agent_base_url}" if agent_base_url else "")
@@ -412,6 +549,10 @@ def evaluate(
                 agent_model=agent_model,
                 agent_api_key=agent_api_key,
                 agent_base_url=agent_base_url,
+                agent_request_body=agent_request_body,
+                agent_response_path=agent_response_path,
+                agent_headers=agent_headers,
+                agent_method=agent_method,
             )
             agent_interface = real_adapter.to_agent_interface()
         

@@ -32,19 +32,19 @@
     }
   },
   "evaluation": {
-    "id": "a0327400-bf37-4140-bfff-9a5f9080352a",
+    "id": "aa9d32e2-8493-41d9-9f5d-5419c7721082",
     "agent_id": "supportbot-v1",
     "scenario_id": "cs-moderate-001",
-    "created_at": "2026-05-29T08:12:42.247987+00:00",
-    "completed_at": "2026-05-29T08:12:42.249189+00:00",
-    "total_duration_ms": 1.2385845184326172,
+    "created_at": "2026-07-27T15:08:27.738888+00:00",
+    "completed_at": "2026-07-27T15:08:27.739796+00:00",
+    "total_duration_ms": 0.9784698486328125,
     "overall_score": 0.30000000000000004,
     "passed": false
   },
   "reliability": {},
   "dimensions": {
     "task_competence": {
-      "dimension_id": "132843cc-0ebb-4225-b194-fbe0b01fe3c5",
+      "dimension_id": "8d81143a-a7c6-4cc1-83cf-f8ce9bad15b8",
       "dimension_name": "Task Competence",
       "dimension_type": "task_competence",
       "score": 0.5000000000000001,
@@ -53,7 +53,7 @@
       "passed": false,
       "feedback": "Task completed successfully. Step coverage: 0.0%. Tool appropriateness: 0.0%. Attempts needed: 1.",
       "error": null,
-      "execution_time_ms": 0.7872581481933594,
+      "execution_time_ms": 0.17070770263671875,
       "metrics": [
         {
           "name": "task_success",
@@ -91,7 +91,7 @@
           "tools_used": [],
           "errors": [],
           "success": true,
-          "completion_time_ms": 0.7410049438476562,
+          "completion_time_ms": 0.10180473327636719,
           "attempts": 1,
           "final_output": "Resolve a customer complaint about a billing error and process a refund."
         },
@@ -102,7 +102,7 @@
       }
     },
     "tool_use": {
-      "dimension_id": "86129e43-0928-41d6-ae16-4545011ea8ce",
+      "dimension_id": "b01c5bba-8872-4ccf-a1d8-81de83691095",
       "dimension_name": "Tool Use",
       "dimension_type": "tool_use",
       "score": 0.0,
@@ -149,7 +149,7 @@
     "scenario_id": "cs-moderate-001",
     "k_trials": 1,
     "agentfit_version": "0.2.0",
-    "captured_at": "2026-05-29T08:12:42.248011+00:00"
+    "captured_at": "2026-07-27T15:08:27.738945+00:00"
   },
   "profile": {
     "name": "Customer Service Agent",
@@ -172,7 +172,7 @@
     "meta": {
       "provider": "openai",
       "model": "gpt-4o-mini",
-      "interpretation_time_ms": 9979.933500289917
+      "interpretation_time_ms": 14603.660345077515
     }
   }
 }

@@ -12,6 +12,8 @@ Included adapters:
 - AnthropicAdapter         — Anthropic Claude (requires anthropic SDK)
 - GoogleAgentKitAdapter    — Google Gemini / AgentKit
 - GenericAdapter           — Wrap any Python callable
+- CustomHTTPAdapter        — Any REST endpoint via URL + JSON body template
+                             + response path (no code required)
 
 To create a custom adapter inherit from UniversalAgentProtocol and
 register with AgentAdapterRegistry.
@@ -26,6 +28,7 @@ from agentfit.adapters.openai_adapter import OpenAIAdapter
 from agentfit.adapters.anthropic_adapter import AnthropicAdapter
 from agentfit.adapters.google_agentkit_adapter import GoogleAgentKitAdapter
 from agentfit.adapters.generic_adapter import GenericAdapter
+from agentfit.adapters.custom_http_adapter import CustomHTTPAdapter
 
 __all__ = [
     "AgentAdapterRegistry",
@@ -34,4 +37,5 @@ __all__ = [
     "AnthropicAdapter",
     "GoogleAgentKitAdapter",
     "GenericAdapter",
+    "CustomHTTPAdapter",
 ]

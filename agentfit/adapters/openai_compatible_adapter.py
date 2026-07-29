@@ -46,6 +46,7 @@ from agentfit.protocol import (
     ToolResult,
     ToolResultType,
 )
+from agentfit.protocol.environment_capture import EnvironmentCapture
 
 
 def _tool_to_openai(tool: ToolDefinition) -> Dict[str, Any]:
@@ -216,11 +217,13 @@ class OpenAICompatibleAdapter(UniversalAgentProtocol):
 
                 # Execute each tool and feed results back
                 for tc in step_tcs:
-                    tool_output = self._execute_tool(tc, tools)
+                    with EnvironmentCapture() as cap:
+                        tool_output = self._execute_tool(tc, tools)
                     tr = ToolResult(
                         tool_call_id=tc.tool_call_id,
                         result_type=ToolResultType.SUCCESS,
                         output=tool_output,
+                        environment_events=cap.to_list(),
                     )
                     all_tool_results.append(tr)
 

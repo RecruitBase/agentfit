@@ -9,8 +9,11 @@ Welcome to AgentFit! This page helps you navigate all documentation and resource
 2. **[GETTING_STARTED.md](../GETTING_STARTED.md)** - 5-minute setup and first evaluation
 3. **[QUICK_START.md](QUICK_START.md)** - Hands-on walkthrough with code examples
 
+### Want to Test Your Own Agent?
+- **[TEST_YOUR_AGENT.md](TEST_YOUR_AGENT.md)** - Quick-test an OpenAI-compatible endpoint + access token, or build/self-host an agent (Sim, Dify, Flowise) and evaluate it
+
 ### Want to Run Tests?
-- **[TESTING.md](TESTING.md)** - Complete testing guide
+- **[TESTING.md](TESTING.md)** - Complete testing guide (for AgentFit itself, not your agent)
 - Run `python scripts/run_tests.py` for comprehensive test suite
 
 ### Want to Publish to PyPI?

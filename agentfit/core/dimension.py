@@ -121,6 +121,13 @@ class Dimension(ABC):
     def __init__(self, config: Optional[DimensionConfig] = None):
         """Initialize dimension with optional configuration."""
         self.config = config or DimensionConfig()
+        # Raw {"prompt": ..., "response": ...} pairs from every agent call
+        # made during evaluate(), populated by dimensions that call
+        # self._agent_execute(). Surfaced to the LLM judge (via
+        # DimensionResult.metadata["agent_trace"]) alongside the sub-metric
+        # scores so it can see the actual tool/environment trace, not just
+        # pass/fail booleans.
+        self._trace: List[Dict[str, Any]] = []
     
     @abstractmethod
     async def evaluate(self, input_data: Dict[str, Any]) -> DimensionResult:

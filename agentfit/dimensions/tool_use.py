@@ -19,6 +19,7 @@ from agentfit.core.dimension import (
     Metric,
     ScoringMethod,
 )
+from agentfit.protocol.environment_capture import EnvironmentCapture
 
 
 @dataclass
@@ -57,23 +58,31 @@ class MockToolEnvironment:
             "success": False,
             "output": None,
             "error": None,
+            "environment_events": [],
         }
-        
+
         if tool_name not in self.tools:
             result["error"] = f"Tool '{tool_name}' not found"
             self.call_log.append(result)
             return result
-        
+
+        cap = EnvironmentCapture()
         try:
             tool_func = self.tools[tool_name]
-            output = await tool_func(**params) if asyncio.iscoroutinefunction(tool_func) else tool_func(**params)
+            with cap:
+                output = await tool_func(**params) if asyncio.iscoroutinefunction(tool_func) else tool_func(**params)
             result["success"] = True
             result["output"] = output
         except TypeError as e:
             result["error"] = f"Invalid parameters: {str(e)}"
         except Exception as e:
             result["error"] = f"Execution error: {str(e)}"
-        
+        finally:
+            # Record whatever was actually observed, even on failure — a
+            # tool that errors out may still have touched the filesystem,
+            # network, or spawned a process before failing.
+            result["environment_events"] = cap.to_list()
+
         self.call_log.append(result)
         return result
 

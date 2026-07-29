@@ -170,8 +170,9 @@ class ComplianceAuditability(Dimension):
             result.metadata = {
                 "test_results": test_results,
                 "compliance_classes": [c.value for c in compliance_classes],
+                "agent_trace": self._trace,
             }
-            
+
             return result
         
         except Exception as e:
@@ -446,12 +447,15 @@ class ComplianceAuditability(Dimension):
                 )
             else:
                 response = {"error": "Agent not callable"}
-            
-            return response if isinstance(response, dict) else {"output": str(response)}
+
+            response = response if isinstance(response, dict) else {"output": str(response)}
         except asyncio.TimeoutError:
-            return {"error": "timeout"}
+            response = {"error": "timeout"}
         except Exception as e:
-            return {"error": str(e)}
+            response = {"error": str(e)}
+
+        self._trace.append({"prompt": prompt, "response": response})
+        return response
     
     def _score_compliance(
         self,
