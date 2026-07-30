@@ -40,6 +40,8 @@ from agentfit.bnp.schema import BNPProfile
 if TYPE_CHECKING:
     from agentfit.interpretability.config import InterpretabilityConfig
     from agentfit.interpretability.interpreter import InterpretationResult
+    from agentfit.loop.config import LoopConfig
+    from agentfit.loop.trace import AgentTrace
 
 _DEFAULT_THRESHOLD = 0.70
 
@@ -65,6 +67,16 @@ class EvaluationRequest:
 
     # Harness metadata (model name, temperature, etc.)
     harness: Optional[HarnessSnapshot] = None
+
+    # Loop testing (multi-turn simulated-conversation evaluation). When set,
+    # each of the k trials runs one full simulated conversation (via
+    # agentfit.loop.orchestrator.ConversationOrchestrator) instead of a
+    # single agent.execute() call, and dimension scores come from
+    # agentfit.loop.judge.TranscriptJudge reading the resulting transcript
+    # instead of each dimension's own heuristic evaluate(). Everything
+    # downstream (aggregation, Pass@k/Pass^k, governance) is unaffected —
+    # see Evaluator._run_loop_trial().
+    loop_config: Optional["LoopConfig"] = None
 
     def __post_init__(self):
         if not self.agent_id:
@@ -228,12 +240,36 @@ class Evaluator:
         }
 
         # ── Run k trials ──────────────────────────────────────────────────
+        # Loop testing runs one full simulated conversation per trial
+        # instead of one single-shot task execution — see
+        # _run_loop_trial() below. Everything from this point on
+        # (aggregation, reliability, governance) is identical either way,
+        # since both paths produce the same Dict[str, DimensionResult] shape.
         all_trial_results: List[Dict[str, DimensionResult]] = []
+        loop_traces: List["AgentTrace"] = []
         for trial_idx in range(k):
-            trial_results = await self._run_single_trial(
-                dimensions_to_eval, eval_context, request.bnp_profile, trial_idx
-            )
+            if request.loop_config is not None:
+                trial_results, trace = await self._run_loop_trial(
+                    dimensions_to_eval, request, trial_idx
+                )
+                loop_traces.append(trace)
+            else:
+                trial_results = await self._run_single_trial(
+                    dimensions_to_eval, eval_context, request.bnp_profile, trial_idx
+                )
             all_trial_results.append(trial_results)
+
+        # Stash each trial's judge verdicts onto its own trace, and the
+        # whole set of traces onto the result, so the standalone trace JSON
+        # file (written by the CLI) is self-contained — a reader shouldn't
+        # need results.json open side-by-side to see how a conversation
+        # was scored.
+        if loop_traces:
+            for trace, trial_results in zip(loop_traces, all_trial_results):
+                trace.judge_verdicts = {
+                    dim_id: dim_result.to_dict() for dim_id, dim_result in trial_results.items()
+                }
+            result.metadata["loop_traces"] = [t.to_dict() for t in loop_traces]
 
         # ── Aggregate across trials ───────────────────────────────────────
         result.dimension_results = self._aggregate_trials(all_trial_results, dimensions_to_eval)
@@ -271,6 +307,40 @@ class Evaluator:
     # ------------------------------------------------------------------
     # Trial execution
     # ------------------------------------------------------------------
+
+    async def _run_loop_trial(
+        self,
+        dimensions: List[str],
+        request: EvaluationRequest,
+        trial_idx: int,
+    ) -> tuple[Dict[str, DimensionResult], "AgentTrace"]:
+        """
+        Run one loop-tested trial: a full simulated multi-turn conversation
+        (ConversationOrchestrator), then score the resulting transcript
+        against `dimensions` (TranscriptJudge) — one trial = one complete,
+        independent conversation from scratch, which is what lets loop-mode
+        trials plug straight into the same k-trial Pass@k/Pass^k machinery
+        used for single-shot evaluations.
+
+        Imports are local (not at module level) so agentfit.core doesn't
+        take a hard dependency on agentfit.loop for the common case where
+        loop testing isn't used at all — mirrors how _run_interpretation()
+        below already local-imports agentfit.interpretability.interpreter.
+        """
+        from agentfit.loop.orchestrator import ConversationOrchestrator
+        from agentfit.loop.judge import TranscriptJudge
+
+        orchestrator = ConversationOrchestrator(request.loop_config)
+        trace = await orchestrator.run_conversation(
+            agent_interface=request.agent_interface,
+            scenario=request.scenario,
+            trial_idx=trial_idx,
+        )
+
+        judge = TranscriptJudge(request.loop_config.llm_config)
+        trial_results = await judge.score(trace, dimensions, request.bnp_profile)
+
+        return trial_results, trace
 
     async def _run_single_trial(
         self,

@@ -105,7 +105,7 @@ All dimensions implemented with scoring, sub-metrics, and test scenarios:
 ### 10. Project Configuration ✓
 - **pyproject.toml**: Updated with PyPI metadata, version 0.2.0
 - **CHANGELOG.md**: Complete release notes
-- **License**: Apache 2.0
+- **License**: Business Source License 1.1 (BUSL-1.1)
 
 ---
 
@@ -526,7 +526,7 @@ pytest tests/ -v
 
 ## 📝 License
 
-Apache License 2.0 - See LICENSE file
+Business Source License 1.1 (BUSL-1.1) - See LICENSE file
 
 ---
 

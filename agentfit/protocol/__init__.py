@@ -17,6 +17,7 @@ from agentfit.protocol.agent_protocol import (
     ToolResultType,
     ExecutionResult,
 )
+from agentfit.protocol.tool_call_normalizer import normalize_tool_calls
 
 __all__ = [
     "UniversalAgentProtocol",
@@ -29,4 +30,5 @@ __all__ = [
     "ToolDefinition",
     "ToolResultType",
     "ExecutionResult",
+    "normalize_tool_calls",
 ]

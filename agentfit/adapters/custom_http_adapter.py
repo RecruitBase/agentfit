@@ -34,7 +34,20 @@ callers can pull out exactly the fields their agent architecture returns:
 
 The "output" (or "final_output") entry becomes ExecutionResult.final_output;
 every extracted field (including that one) is also kept in
-ExecutionResult.metadata["extracted_fields"] so nothing is lost.
+ExecutionResult.metadata["extracted_fields"] so nothing is lost. A field
+named "tool_calls" is additionally normalized (via
+agentfit.protocol.tool_call_normalizer) into typed ToolCall/ToolResult
+objects on ExecutionResult, regardless of which key names the platform used
+for the tool name/arguments internally.
+
+Multi-turn conversations (AgentFit's loop-testing mode) are supported via a
+second placeholder, `{conversation_history}`, usable anywhere in the JSON
+body template. Unlike `{task}` (always string-substituted), this one only
+resolves when a template string is *exactly* "{conversation_history}" — in
+that case the whole templated field is replaced with the real structured
+list of prior turns (not a stringified blob), e.g.:
+
+    request_body_template={"input": "{task}", "history": "{conversation_history}"}
 """
 
 from typing import Any, Dict, List, Optional, Union
@@ -50,22 +63,46 @@ from agentfit.protocol import (
     ExecutionResult,
     Message,
     MessageRole,
+    ToolCall,
+    ToolResult,
 )
 from agentfit.protocol.environment_capture import EnvironmentCapture
+from agentfit.protocol.tool_call_normalizer import normalize_tool_calls
 
 JSONValue = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
 
+# Placeholder token used inside --agent-request-body to splice in the
+# structured conversation-history list (see module docstring above).
+_HISTORY_TOKEN = "{conversation_history}"
 
-def _substitute(value: JSONValue, replacements: Dict[str, str]) -> JSONValue:
-    """Recursively replace `{token}` placeholders inside string leaves.
 
-    Substitution happens on the Python object *before* JSON-encoding, so
-    quotes/newlines in the replacement text are escaped correctly by the
-    JSON encoder rather than needing to be escaped by the caller.
+def _substitute(value: JSONValue, replacements: Dict[str, Any]) -> JSONValue:
+    """Recursively replace `{token}` placeholders throughout a JSON template.
+
+    Two substitution modes, depending on the replacement's type:
+
+    - String replacements (e.g. {task}, {api_key}) are substituted
+      *partially* — `.replace()` on whatever surrounding string the
+      template author wrote, so "Hi, please help with: {task}" works.
+      Substitution happens on the Python object *before* JSON-encoding, so
+      quotes/newlines in the replacement text are escaped correctly by the
+      json encoder rather than needing to be escaped by the caller.
+
+    - Non-string replacements (e.g. conversation_history, a list) can only
+      be substituted *wholesale*: a string can't have a list spliced into
+      the middle of it. So these only apply when a template string leaf is
+      *exactly* the token (nothing else in the string) — in that case the
+      entire field is replaced with the structured value itself, preserving
+      its real type (list/dict) instead of stringifying it.
     """
     if isinstance(value, str):
+        # Exact-match, non-string substitution first: e.g. the whole field
+        # is literally "{conversation_history}" and history is a list.
+        if value in replacements and not isinstance(replacements[value], str):
+            return replacements[value]
+        # Partial, string-only substitution (existing {task}/{api_key} behavior).
         for token, replacement in replacements.items():
-            if token in value:
+            if isinstance(replacement, str) and token in value:
                 value = value.replace(token, replacement)
         return value
     if isinstance(value, dict):
@@ -174,8 +211,22 @@ class CustomHTTPAdapter(UniversalAgentProtocol):
         headers.setdefault("Content-Type", "application/json")
         return headers
 
-    def _build_body(self, task: str) -> JSONValue:
-        return _substitute(self.request_body_template, {"{task}": task})
+    def _build_body(
+        self,
+        task: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> JSONValue:
+        # {task} always string-substitutes; {conversation_history} only
+        # resolves when a template field is exactly that token (see
+        # _substitute's docstring) — passing [] when there's no history
+        # yet (turn 1 of a loop-tested conversation, or a plain single-shot
+        # eval) means the field still resolves to a JSON empty array rather
+        # than being left as a literal, unresolved "{conversation_history}"
+        # string in the request body.
+        return _substitute(
+            self.request_body_template,
+            {"{task}": task, _HISTORY_TOKEN: conversation_history or []},
+        )
 
     async def execute_task(
         self,
@@ -191,8 +242,18 @@ class CustomHTTPAdapter(UniversalAgentProtocol):
         final_output: Optional[str] = None
         environment_events: List[Dict[str, Any]] = []
         extracted_fields: Optional[Dict[str, Any]] = None
+        # Populated (from a "tool_calls" response_path field, if configured)
+        # after normalize_tool_calls() runs below — kept typed so downstream
+        # consumers (UniversalAgentProtocol.execute()'s tool_trace, the
+        # LLM judge) see the same ToolCall/ToolResult shape every adapter uses.
+        tool_calls: List[ToolCall] = []
+        tool_results: List[ToolResult] = []
 
-        body = self._build_body(task)
+        # Conversation history, when this call is one turn of a multi-turn
+        # loop-tested conversation (see agentfit/loop/orchestrator.py). Empty
+        # for a plain single-shot evaluation, which behaves exactly as before.
+        conversation_history = (context or {}).get("conversation_history")
+        body = self._build_body(task, conversation_history)
         headers = self._build_headers()
         timeout = float(timeout_seconds or self.request_timeout)
 
@@ -243,6 +304,18 @@ class CustomHTTPAdapter(UniversalAgentProtocol):
                 # is not fatal — they're supplementary, so just note them.
                 errors.extend(field_errors)
 
+                # A field literally named "tool_calls" gets normalized into
+                # typed ToolCall/ToolResult objects (rather than staying an
+                # opaque platform-specific blob in extracted_fields), so this
+                # adapter's tool calls show up through the exact same
+                # execute()/tool_trace machinery every other adapter uses —
+                # see agentfit/protocol/tool_call_normalizer.py for the
+                # cross-platform key-name handling (OpenAI's "function.name"
+                # vs. Sim.ai's "name"/"toolName", etc.).
+                raw_tool_calls = extracted.get("tool_calls")
+                if isinstance(raw_tool_calls, list):
+                    tool_calls, tool_results = normalize_tool_calls(raw_tool_calls)
+
             elif self.response_path:
                 if not isinstance(raw_response, (dict, list)):
                     raise ValueError(
@@ -280,6 +353,8 @@ class CustomHTTPAdapter(UniversalAgentProtocol):
             success=len(errors) == 0,
             final_output=final_output,
             messages=messages,
+            tool_calls=tool_calls,
+            tool_results=tool_results,
             total_steps=1,
             errors=errors,
             execution_time_ms=(time.time() - start) * 1000,

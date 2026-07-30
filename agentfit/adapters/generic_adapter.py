@@ -7,6 +7,7 @@ Supports callable-based agents and frameworks not otherwise covered.
 
 from typing import Any, Dict, List, Optional, Callable
 import asyncio
+import inspect
 import time
 from loguru import logger
 
@@ -20,12 +21,50 @@ from agentfit.protocol import (
 from agentfit.protocol.environment_capture import EnvironmentCapture
 
 
+def _supported_kwargs(func: Callable, candidates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Filter `candidates` down to whichever keyword args `func` actually accepts.
+
+    GenericAdapter wraps arbitrary user callables, which range from a bare
+    `lambda task: ...` up to `async def agent(task, tools=None, context=None)`.
+    Always forwarding tools/context unconditionally would break every
+    simpler callable with a TypeError ("unexpected keyword argument"). This
+    inspects the callable's signature so both styles work: callables that
+    declare (or accept **kwargs for) `tools`/`context` receive them —
+    needed so bridge functions can read `context["conversation_history"]`
+    during loop testing — while simpler callables are still called with
+    just `task`, unchanged from before.
+    """
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        # Some callables (certain builtins, C extensions) aren't
+        # introspectable — fail safe by passing nothing extra rather than
+        # risking a spurious TypeError on every call.
+        return {}
+
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    return {
+        name: value
+        for name, value in candidates.items()
+        if accepts_kwargs or name in params
+    }
+
+
 class GenericAdapter(UniversalAgentProtocol):
     """
     Generic adapter for custom/user-defined agents.
-    
+
     Wraps any callable agent in the UAP interface.
     Supports both sync and async callables.
+
+    Conversation-history convention (used by AgentFit's loop-testing mode):
+    during a multi-turn simulated conversation, the orchestrator passes the
+    prior turns as `context["conversation_history"]` — a list of
+    {"role": "user"|"assistant", "content": str} dicts, oldest first. Bridge
+    callables that want multi-turn memory should read that key themselves
+    (this adapter has no chat state of its own to seed it with); callables
+    that ignore `context` simply behave statelessly per call, same as today.
     """
     
     def __init__(
@@ -75,6 +114,15 @@ class GenericAdapter(UniversalAgentProtocol):
                 "max_steps": max_steps,
             }
             
+            # Only pass tools/context to callables that actually declare
+            # (or **kwargs-accept) them — see _supported_kwargs() above.
+            # Both the sync and async paths use the same filtered kwargs so
+            # a bridge callable behaves identically regardless of whether
+            # it happens to be sync or async.
+            call_kwargs = _supported_kwargs(
+                self.agent_callable, {"tools": tools, "context": context}
+            )
+
             # Execute agent (support both sync and async), capturing actual
             # OS-level side effects (network/filesystem/process) on whichever
             # thread runs the callable — independent of whatever the
@@ -82,16 +130,23 @@ class GenericAdapter(UniversalAgentProtocol):
             if asyncio.iscoroutinefunction(self.agent_callable):
                 with EnvironmentCapture() as cap:
                     output = await asyncio.wait_for(
-                        self.agent_callable(task, tools=tools, context=context),
+                        self.agent_callable(task, **call_kwargs),
                         timeout=timeout_seconds
                     )
                 environment_events = cap.to_list()
             else:
                 # Run sync callable in executor to avoid blocking; the
                 # capture must be entered on that worker thread, not here.
+                #
+                # NOTE: tools/context are forwarded here too (matching the
+                # async branch above) when the callable accepts them, so
+                # sync bridge callables can read
+                # context["conversation_history"] during loop testing —
+                # previously this dropped both silently and unconditionally,
+                # making history unreachable for every sync callable.
                 def _run_sync_callable():
                     with EnvironmentCapture() as cap:
-                        result = self.agent_callable(task)
+                        result = self.agent_callable(task, **call_kwargs)
                     return result, cap.to_list()
 
                 loop = asyncio.get_event_loop()

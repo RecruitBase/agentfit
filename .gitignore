@@ -1,8 +1,6 @@
 agentfit.egg-info
 coco.md
 IMPLEMENTATION_SUMMARY.md
-agentfit/__pycache__/
-tests/__pycache__/
 tests/test_e2e.py
 tests/test_evaluator.py
 tests/test_protocol.py
@@ -20,3 +18,20 @@ results_interpreted.json
 Eval Server/
 Eval Dashboard/
 .claude/
+
+# Python bytecode/cache (repo-wide, not just agentfit/tests/)
+__pycache__/
+*.py[cod]
+
+# Local evaluation artifacts written by `agentfit evaluate` (--output /
+# --agent-trace-output) — these are per-run outputs, not curated repo content.
+results.json
+trace.json
+*.trace.json
+
+# User-authored test fixtures for local experimentation (BNP profiles,
+# loop-testing personas) written at the repo root while trying things out.
+# Curated examples live under examples/ and agentfit/examples/, which this
+# does not affect.
+/refund-policy.md
+/persona.md

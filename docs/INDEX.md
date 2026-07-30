@@ -72,7 +72,7 @@ docs/
 ├── CONTRIBUTING.md - Developer guide
 ├── IMPLEMENTATION_SUMMARY.md - Technical details
 ├── CHANGELOG.md - Release history
-├── LICENSE - Apache 2.0
+├── LICENSE - Business Source License 1.1 (BUSL-1.1)
 
 examples/
 ├── evaluate_openai_agent.py

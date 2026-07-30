@@ -29,6 +29,8 @@ from agentfit.scenarios import ScenarioLoader
 from agentfit.output import OutputFormatter, ReportGenerator
 from agentfit.mock_agent import MockAgent
 from agentfit.interpretability.config import InterpretabilityConfig, LLMProvider
+from agentfit.loop.persona import PersonaParser
+from agentfit.loop.config import LoopConfig
 
 # Real adapter imports (lazy — only imported when needed to keep startup fast)
 _ADAPTER_CHOICES = [
@@ -377,6 +379,96 @@ def main():
     help="Base URL for openai_compatible provider or to override any provider's default endpoint. "
          "Example: http://localhost:1234/v1 for LM Studio",
 )
+@click.option(
+    "--enable-loop",
+    "enable_loop",
+    is_flag=True,
+    default=False,
+    help=(
+        "Enable loop testing: instead of one fixed task, an LLM plays the "
+        "customer (per --loop-instructions) and holds a real multi-turn "
+        "conversation with the agent under test. Requires --loop-instructions "
+        "and the --loop-llm-* flags below."
+    ),
+)
+@click.option(
+    "--loop-instructions",
+    "loop_instructions",
+    type=click.Path(exists=True),
+    default=None,
+    help=(
+        "Path to a persona markdown file describing the simulated customer "
+        "(who they are, what they want). Required with --enable-loop. "
+        "Optional YAML frontmatter can set opening_message/max_turns/goal/"
+        "agent_speaks_first — see docs/TEST_YOUR_AGENT.md."
+    ),
+)
+@click.option(
+    "--loop-max-turns",
+    "loop_max_turns",
+    type=int,
+    default=20,
+    show_default=True,
+    help=(
+        "Safety cap on the number of customer<->agent exchanges before the "
+        "conversation is forced to stop, even if the simulated customer "
+        "hasn't signalled it's done. Overridable per-persona via max_turns: "
+        "in the persona file's frontmatter."
+    ),
+)
+@click.option(
+    "--loop-llm-provider",
+    "loop_llm_provider",
+    type=click.Choice(
+        [
+            "openai", "anthropic", "google", "mistral",
+            "deepseek", "qwen", "groq", "together", "ollama",
+            "openai_compatible",
+        ],
+        case_sensitive=False,
+    ),
+    default="openai",
+    help=(
+        "LLM provider driving BOTH the simulated-customer persona and the "
+        "transcript judge that scores the finished conversation. Kept "
+        "separate from --provider/--interpret, which is an unrelated, "
+        "optional post-hoc narrative layer on top of governance results."
+    ),
+)
+@click.option(
+    "--loop-llm-api-key",
+    "loop_llm_api_key",
+    type=str,
+    default=None,
+    envvar=["LOOP_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+    help="API key for --loop-llm-provider. Not required for Ollama. "
+         "Can also be set via the LOOP_LLM_API_KEY env var.",
+)
+@click.option(
+    "--loop-llm-model",
+    "loop_llm_model",
+    type=str,
+    default=None,
+    help="Model name for --loop-llm-provider (uses the provider default if omitted).",
+)
+@click.option(
+    "--loop-llm-base-url",
+    "loop_llm_base_url",
+    type=str,
+    default=None,
+    help="Base URL override for --loop-llm-provider (required for openai_compatible).",
+)
+@click.option(
+    "--agent-trace-output",
+    "agent_trace_output",
+    type=click.Path(),
+    default=None,
+    help=(
+        "[--enable-loop only] Where to write the full conversation trace "
+        "JSON (every turn, declared tool calls, judge verdicts). Defaults "
+        "to '<output>.trace.json' when omitted."
+    ),
+)
 def evaluate(
     bnp: str,
     evals: Optional[str],
@@ -401,6 +493,14 @@ def evaluate(
     api_key: Optional[str],
     llm_model: Optional[str],
     base_url: Optional[str],
+    enable_loop: bool,
+    loop_instructions: Optional[str],
+    loop_max_turns: int,
+    loop_llm_provider: str,
+    loop_llm_api_key: Optional[str],
+    loop_llm_model: Optional[str],
+    loop_llm_base_url: Optional[str],
+    agent_trace_output: Optional[str],
 ):
     """Run agent evaluation based on BNP profile.
 
@@ -437,6 +537,14 @@ def evaluate(
         --agent-headers '{"x-api-key": "{api_key}"}' \\
         --agent-api-key sk-... \\
         --agent-response-path output
+
+    \b
+    # Loop testing: simulate a real multi-turn customer conversation
+    agentfit evaluate --bnp customer_bnp.md --output results.json \\
+        --agent-adapter openai --agent-model gpt-4o --agent-api-key sk-... \\
+        --enable-loop --loop-instructions persona.md --loop-max-turns 15 \\
+        --loop-llm-provider openai --loop-llm-api-key sk-... \\
+        --agent-trace-output trace.json
     """
     
     # Setup logging
@@ -600,6 +708,81 @@ def evaluate(
                 f"(Pass@{k_trials} + Pass^{k_trials} will be computed)"
             )
 
+        # Build loop-testing config if requested. Kept separate from the
+        # --interpret block above: --interpret is an optional post-hoc
+        # narrative pass over already-computed governance results, whereas
+        # --enable-loop changes how the evaluation itself is *run* (a real
+        # multi-turn conversation instead of one task) — the two are
+        # orthogonal and can be combined or used independently.
+        loop_config = None
+        if enable_loop:
+            if not loop_instructions:
+                click.secho(
+                    "✗ --loop-instructions is required with --enable-loop. "
+                    "It should point at a persona markdown file describing "
+                    "the simulated customer.",
+                    fg="red",
+                )
+                raise click.Exit(1)
+
+            persona = PersonaParser.parse_file(loop_instructions)
+
+            loop_provider = LLMProvider(loop_llm_provider.lower())
+            if loop_provider.value not in ("ollama",) and not loop_llm_api_key:
+                click.secho(
+                    f"✗ --loop-llm-api-key is required for provider '{loop_llm_provider}' "
+                    "(or set LOOP_LLM_API_KEY).",
+                    fg="red",
+                )
+                raise click.Exit(1)
+            if loop_provider == LLMProvider.OPENAI_COMPATIBLE and not loop_llm_base_url:
+                click.secho(
+                    "✗ --loop-llm-base-url is required when using "
+                    "--loop-llm-provider openai_compatible.",
+                    fg="red",
+                )
+                raise click.Exit(1)
+
+            loop_llm_config = InterpretabilityConfig(
+                enabled=True,
+                provider=loop_provider,
+                api_key=loop_llm_api_key,
+                model=loop_llm_model,
+                base_url=loop_llm_base_url,
+            )
+
+            # Default the trace output alongside the results file
+            # (results.json -> results.trace.json) when the user didn't
+            # pick an explicit path, so a run always leaves a matching
+            # trace next to its scores without extra flags.
+            resolved_trace_output = agent_trace_output or str(
+                Path(output).with_suffix("").with_suffix(".trace.json")
+            )
+
+            loop_config = LoopConfig(
+                persona=persona,
+                llm_config=loop_llm_config,
+                max_turns=loop_max_turns,
+                agent_trace_output=resolved_trace_output,
+            )
+
+            # Each trial = one full simulated conversation, so k_trials (if
+            # set) directly multiplies the number of persona/judge LLM
+            # calls made — surfaced here so cost isn't a surprise.
+            effective_k = max(1, k_trials or (bnp_profile.k_trials if bnp_profile else 1))
+            approx_calls_per_trial = loop_config.effective_max_turns + 1  # + 1 for the judge call
+            click.echo(
+                f"🔁 Loop testing enabled: persona={loop_instructions}, "
+                f"max_turns={loop_config.effective_max_turns}, "
+                f"agent={agent_adapter}"
+                + (f" (mock — conversation will lack real customer awareness)" if agent_adapter == "mock" else "")
+            )
+            click.echo(
+                f"   Estimated LLM calls: up to ~{approx_calls_per_trial} per trial "
+                f"× {effective_k} trial(s) = ~{approx_calls_per_trial * effective_k} "
+                f"(persona + judge, not counting the agent under test itself)"
+            )
+
         # Create evaluation request
         evaluation_request = EvaluationRequest(
             agent_id=agent_id,
@@ -610,6 +793,7 @@ def evaluate(
             context={"verbose": verbose},
             interpretability=interp_config,
             k_trials=k_trials,
+            loop_config=loop_config,
         )
         
         # Run evaluation
@@ -628,7 +812,20 @@ def evaluate(
             format=output_format,
             bnp_profile=bnp_profile
         )
-        
+
+        # Write the standalone conversation-trace file for loop-tested runs.
+        # Evaluator stashed one AgentTrace.to_dict() per k-trial under
+        # result.metadata["loop_traces"] (see Evaluator.evaluate()) —
+        # written separately from results.json so a reader can inspect the
+        # full turn-by-turn conversation without wading through the
+        # governance/dimension-score JSON.
+        if loop_config is not None:
+            loop_traces = result.metadata.get("loop_traces", [])
+            trace_path = Path(loop_config.agent_trace_output)
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            trace_path.write_text(json.dumps(loop_traces, indent=2, default=str))
+            click.echo(f"🗒️  Agent trace ({len(loop_traces)} conversation(s)) written to: {trace_path}")
+
         # Print summary
         click.echo("")
         ReportGenerator.print_summary(result, bnp_profile)

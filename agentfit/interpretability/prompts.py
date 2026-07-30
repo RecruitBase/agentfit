@@ -12,6 +12,7 @@ import json
 from agentfit.core.evaluator import EvaluationResult
 from agentfit.core.dimension import DimensionResult
 from agentfit.bnp.schema import BNPProfile
+from agentfit.bnp.rendering import render_bnp_section
 
 
 SYSTEM_PROMPT = """\
@@ -98,8 +99,7 @@ def build_user_prompt(
 
     # ── BNP Profile Context ──────────────────────────────────────────
     if bnp_profile:
-        bnp_section = _build_bnp_section(bnp_profile)
-        sections.append(bnp_section)
+        sections.append(render_bnp_section(bnp_profile))
 
     # ── Per-Dimension Raw Data ───────────────────────────────────────
     sections.append(_build_dimensions_section(result, weights))
@@ -200,35 +200,6 @@ def _build_trace_section(dim_result: DimensionResult, max_events: int = 30) -> s
             lines.append(f"    ... ({len(observed) - max_events} more)")
     else:
         lines.append("  Observed environment events: none")
-
-    return "\n".join(lines)
-
-
-def _build_bnp_section(bnp: BNPProfile) -> str:
-    lines = ["=== BUSINESS NEED PROFILE (BNP) ==="]
-    lines.append(f"Name: {bnp.name}")
-    lines.append(f"Organization: {bnp.organization}")
-    lines.append(f"Domain: {bnp.domain}")
-    lines.append(f"Description: {bnp.description}")
-    lines.append(f"Task Complexity: {bnp.task_complexity}")
-
-    if bnp.requirements:
-        lines.append("\nRequirements:")
-        for req in bnp.requirements:
-            flag = "[REQUIRED]" if req.required else "[OPTIONAL]"
-            rate = f" (min success rate: {req.min_success_rate})" if req.min_success_rate else ""
-            lines.append(f"  - {flag} {req.capability}: {req.description}{rate}")
-
-    if bnp.evaluation_dimensions:
-        lines.append("\nDimension Weights:")
-        for dw in bnp.evaluation_dimensions:
-            lines.append(f"  - {dw.dimension}: weight={dw.weight}")
-
-    if bnp.compliance_requirements:
-        lines.append(f"\nCompliance: {', '.join(bnp.compliance_requirements)}")
-
-    if bnp.max_latency_ms:
-        lines.append(f"Max Latency: {bnp.max_latency_ms}ms")
 
     return "\n".join(lines)
 

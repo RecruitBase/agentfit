@@ -5,16 +5,16 @@
 ### The Agent Evaluation & Interpretability Framework
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
-[![Version](https://img.shields.io/badge/version-0.2.0-orange?style=flat-square)](https://github.com/RecruitBase/agentfit/releases)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.3.0-orange?style=flat-square)](https://github.com/RecruitBase/agentfit/releases)
 [![Tests](https://img.shields.io/github/actions/workflow/status/recruitbase/agentfit/tests.yml?label=tests&style=flat-square)](https://github.com/RecruitBase/agentfit/actions)
 [![Code Style: Black](https://img.shields.io/badge/code%20style-black-000000?style=flat-square)](https://github.com/psf/black)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/RecruitBase/agentfit/pulls)
 [![Made by RecruitBase](https://img.shields.io/badge/made%20by-RecruitBase-6C3BF5?style=flat-square)](https://recruitbase.work)
 
-**Stop trusting the ai agents hype. Objectively evaluate which agent is appropriate for your business needs.**
+**A rigorous, framework-agnostic standard for evaluating whether an AI agent is actually fit for your business — not just impressive in a demo.**
 
-[Getting Started](#getting-started) · [Why AgentFit](#why-agentfit) · [Dimensions](#evaluation-dimensions) · [Interpretability](#interpretability-layer) · [Scaling](#scaling) · [Docs](docs/) · [Examples](examples/)
+[Getting Started](#getting-started) · [Why AgentFit](#why-agentfit) · [Dimensions](#evaluation-dimensions) · [Loop Testing](#loop-testing-simulated-multi-turn-conversations) · [Interpretability](#interpretability-layer) · [Scaling](#scaling) · [Docs](docs/) · [Examples](examples/)
 
 </div>
 
@@ -22,7 +22,7 @@
 
 ## What is AgentFit?
 
-AgentFit is an **open-source, enterprise-grade agent evaluation and governance framework**. It gives teams a structured, reproducible way to assess AI agents across seven behavioural dimensions — then produces a **binary governance decision** (PASS / FAIL against thresholds you define) alongside reliability statistics and an LLM-grounded audit narrative.
+AgentFit is a **source-available, enterprise-grade agent evaluation and governance framework**. It gives teams a structured, reproducible way to assess AI agents across seven behavioural dimensions — then produces a **binary governance decision** (PASS / FAIL against thresholds you define) alongside reliability statistics and an LLM-grounded audit narrative.
 
 It is **framework-agnostic**: bring your OpenAI, Anthropic, Google, vLLM, Ollama, or fully custom agent. AgentFit evaluates it through a universal protocol without changing a single line of agent code.
 
@@ -530,6 +530,22 @@ AgentFit ships a first-class `OpenAICompatibleAdapter` that lets you evaluate **
 3. Repeats up to `max_steps` or until the model returns a plain text response
 4. Captures every `ToolCall`, `ToolResult`, and `Message` into the UAP `ExecutionResult` that all evaluation dimensions inspect
 
+### Custom REST endpoints (no code required)
+
+Not every agent platform speaks `/v1/chat/completions` — plenty expose their own request/response JSON (workflow builders, in-house APIs, RAG services). For these, `CustomHTTPAdapter` (`--agent-adapter custom_http`) takes a URL, a JSON body template, and a path telling it where the answer lives in the response — no adapter subclass or bridge function needed:
+
+```bash
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter custom_http \
+  --agent-base-url "https://my-platform.example.com/api/agent/run" \
+  --agent-request-body '{"input": "{task}"}' \
+  --agent-headers '{"x-api-key": "{api_key}"}' \
+  --agent-api-key sk-... \
+  --agent-response-path "output"
+```
+
+`--agent-response-path` also accepts a JSON object mapping field name → path, for platforms that return content, tool calls, tokens, and model name as separate fields (e.g. `{"output": "agent1.content", "tool_calls": "agent1.toolCalls"}`) — tool calls extracted this way are normalized into typed `ToolCall`/`ToolResult` objects regardless of which key names the platform uses internally (OpenAI's `function.name`/`function.arguments`, or flatter shapes like `name`/`args`). See [docs/TEST_YOUR_AGENT.md](docs/TEST_YOUR_AGENT.md) for the full flag reference and worked examples.
+
 ### Custom tool execution
 
 By default the adapter returns a structured mock acknowledgment for every tool call, which is enough to measure whether the model selects the right tools and parameters.
@@ -587,6 +603,50 @@ agentfit evaluate \
   --agent-model meta-llama/Meta-Llama-3-70B-Instruct \
   --agent-base-url http://localhost:8000/v1
 ```
+
+---
+
+## Loop Testing: Simulated Multi-Turn Conversations
+
+Every mode above evaluates a single task per scenario. Real customer-service, support, and sales agents are used in a back-and-forth conversation, not one isolated request — an agent that nails a single question can still fail once a customer pushes back, changes their mind, or has to repeat themselves.
+
+**Loop testing** closes that gap: an LLM plays the customer (a persona you describe in a markdown file), holds a genuine multi-turn conversation with your agent, stops itself once it's satisfied or gives up, and the whole transcript is scored by an LLM judge against the same BNP dimensions everything else in AgentFit uses — so governance decisions and Pass@k/Pass^k reliability statistics work identically, whether a trial came from one task or a full conversation. Works with any adapter (`openai_compatible`, `custom_http`, `generic`, `openai`, `anthropic`) — loop testing only changes how many turns a trial runs, not which adapter is under test.
+
+### Define a persona
+
+Save this as `persona.md`:
+
+```markdown
+---
+opening_message: "Hi, I never received my order and it's been two weeks."
+max_turns: 15
+goal: "Get a full refund since the order never arrived."
+agent_speaks_first: false
+---
+You are Jordan, a mildly frustrated but reasonable customer. Your order
+never arrived. You want a refund. If the agent asks for an order number,
+make one up. Once the agent resolves it, thank them and end the conversation.
+```
+
+The frontmatter is optional — omit `opening_message` to let the persona LLM generate an in-character opener instead of a fixed one. The body below it is the actual persona instructions: write who this customer is and what they want, in plain English. AgentFit wraps it with its own instructions requiring a small structured reply each turn (`{"message": ..., "done": bool}`), so the conversation has a reliable stop signal instead of AgentFit guessing from free text when "no more progress" is being made.
+
+### Run it
+
+```bash
+agentfit evaluate --bnp my_bnp.md --output results.json \
+  --agent-adapter openai --agent-model gpt-4o --agent-api-key sk-... \
+  --enable-loop \
+  --loop-instructions persona.md \
+  --loop-max-turns 15 \
+  --loop-llm-provider openai --loop-llm-api-key sk-... \
+  --agent-trace-output trace.json
+```
+
+`--loop-llm-provider`/`--loop-llm-api-key`/`--loop-llm-model`/`--loop-llm-base-url` configure the LLM that plays the customer **and** scores the finished transcript (same provider list as interpretation, below) — kept separate from `--interpret`'s flags since the two are unrelated: `--interpret` narrates already-computed scores, `--enable-loop` changes how the evaluation itself is run. `--trials N` works as usual: each trial is one complete, independent simulated conversation from scratch, feeding the same Pass@k/Pass^k statistics every other evaluation mode uses.
+
+`--agent-trace-output` (defaults to `<output>.trace.json`) writes the full turn-by-turn transcript: every message, declared tool calls, observed environment events, per-turn latency, and the judge's final per-dimension verdicts — self-contained, so you don't need `results.json` open alongside it to see how a conversation was scored.
+
+See [docs/TEST_YOUR_AGENT.md](docs/TEST_YOUR_AGENT.md#part-5--loop-testing-simulate-a-real-multi-turn-conversation) for the full flag reference.
 
 ---
 
@@ -662,10 +722,13 @@ agentfit/
 │
 ├── bnp/
 │   ├── schema.py             # BNPProfile, AgentRequirement, DimensionWeight
-│   └── parser.py             # Markdown → BNPProfile
+│   ├── parser.py             # Markdown → BNPProfile
+│   └── rendering.py          # Shared BNP-to-prompt rendering (used by both LLM judges)
 │
 ├── protocol/
-│   └── agent_protocol.py     # UniversalAgentProtocol base class + execute() + to_agent_interface()
+│   ├── agent_protocol.py       # UniversalAgentProtocol base class + execute() + to_agent_interface()
+│   ├── environment_capture.py  # OS-level audit-hook capture of network/filesystem/process activity
+│   └── tool_call_normalizer.py # Cross-platform tool-call parsing (OpenAI, Sim.ai, and other shapes)
 │
 ├── core/
 │   ├── evaluator.py          # Multi-trial orchestrator, governance decision, harness snapshot
@@ -677,7 +740,16 @@ agentfit/
 │   ├── openai_adapter.py             # OpenAI api.openai.com (inherits above)
 │   ├── anthropic_adapter.py          # Anthropic Claude (real SDK with tool-use loop)
 │   ├── google_agentkit_adapter.py    # Google Gemini / AgentKit
+│   ├── custom_http_adapter.py        # Any REST endpoint via URL + JSON body template, no code
 │   └── generic_adapter.py            # Wrap any Python callable
+│
+├── loop/                     # Loop testing: simulated multi-turn conversations
+│   ├── persona.py             # Persona markdown parsing + customer-simulator LLM
+│   ├── orchestrator.py        # Turn-by-turn conversation driver
+│   ├── judge.py               # TranscriptJudge — scores a transcript into DimensionResults
+│   ├── trace.py               # AgentTrace / TurnRecord — the conversation trace record
+│   ├── prompts.py             # Persona-wrapper and transcript-judge prompt templates
+│   └── config.py              # LoopConfig
 │
 ├── server/
 │   └── app.py               # FastAPI REST server
@@ -898,7 +970,7 @@ AgentFit is built and maintained by **[RecruitBase](https://recruitbase.work)** 
 
 > *"We evaluate AI agents the same way we'd interview a human: define the requirements, set the criteria, run a structured assessment, and explain the result."*
 
-The framework is open-source because the problem — how do you know if an AI agent is fit for a specific role? — is one the whole industry needs to solve together.
+The framework's source is open because the problem — how do you know if an AI agent is fit for a specific role? — is one the whole industry needs to solve together. See [License](#license) for what "source-available" means in practice: free to self-host and use, with resale reserved to RecruitBase absent a commercial agreement.
 
 - Website: [recruitbase.work](https://recruitbase.work)
 - AgentFit issues: [GitHub Issues](https://github.com/RecruitBase/agentfit/issues)
@@ -916,13 +988,20 @@ If you use AgentFit in research, please cite:
   author  = {Arnauld, Gabiro N. and RecruitBase Contributors},
   year    = {2025},
   url     = {https://github.com/RecruitBase/agentfit},
-  license = {Apache-2.0}
+  license = {BUSL-1.1}
 }
 ```
 
 ## License
 
-AgentFit is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
+AgentFit is source-available under the **Business Source License 1.1 (BUSL-1.1)**. See [LICENSE](LICENSE) for the full text.
+
+In short:
+- **Free to self-host and use** — individuals and institutions (commercial or not) can run AgentFit for their own evaluations at no cost, with no functional restrictions.
+- **Not free to resell** — you may not offer AgentFit (or a modified version of it) to third parties as a hosted product/service, or otherwise sell, sublicense, or commercially redistribute it, without a commercial license from RecruitBase.
+- **Converts to Apache 2.0 automatically** on 2030-07-30 (or four years after each version's release, whichever comes first) — the hallmark of the Business Source License, used by projects like MariaDB, CockroachDB, and Sentry. Nothing you build against AgentFit today is at risk of being locked in.
+
+For a commercial license covering resale, embedding, or hosted redistribution, contact [recruitbase.work](https://recruitbase.work).
 
 ---
 
@@ -940,7 +1019,15 @@ AgentFit is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) fo
 **Self-hosted model support (done)**
 - [x] OpenAICompatibleAdapter — vLLM, Ollama, LM Studio, Groq, Together, DeepSeek
 - [x] Real Anthropic SDK adapter with tool-use loop
+- [x] CustomHTTPAdapter — any REST endpoint via URL + JSON body template, no code
+- [x] Cross-platform tool-call normalization (OpenAI, Sim.ai, and other response shapes)
 - [x] `--agent-adapter` / `--trials` CLI flags
+
+**Multi-turn evaluation (done)**
+- [x] Loop testing — LLM-simulated customer holds a real multi-turn conversation with the agent under test
+- [x] Structured stop-signal persona protocol (no fragile "no more progress" heuristics)
+- [x] Transcript judge scoring conversations against standard BNP dimensions
+- [x] Full conversation trace export (`--agent-trace-output`)
 
 **CI/CD & continuous evaluation**
 - [ ] GitHub Actions / GitLab CI native integration
@@ -962,6 +1049,6 @@ AgentFit is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) fo
 
 <div align="center">
 
-Built with care by **[RecruitBase](https://recruitbase.work)** · Apache 2.0 · [Contribute](https://github.com/RecruitBase/agentfit/pulls)
+Built with care by **[RecruitBase](https://recruitbase.work)** · BUSL-1.1 · [Contribute](https://github.com/RecruitBase/agentfit/pulls)
 
 </div>

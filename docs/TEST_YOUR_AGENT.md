@@ -5,6 +5,7 @@ Not every agent is reachable through an OpenAI-shaped `/v1/chat/completions` end
 - **[Part 1](#part-1--quick-test-against-an-openai-compatible-endpoint--access-token)** — you already have an endpoint (`/v1/chat/completions`-shaped) and an access token, and just want a fast smoke test.
 - **[Part 2](#part-2--custom-rest-endpoint-no-openai-shape-no-python)** — your agent speaks its own custom JSON API (not OpenAI-shaped). Point AgentFit at it with a URL and a JSON body template — no code required.
 - **[Part 3](#part-3--build--self-host-an-agent-for-free-then-test-it)** — you don't have an agent yet and want to build one on a free platform (tools, skills, hosting) and then evaluate it.
+- **[Part 5](#part-5--loop-testing-simulate-a-real-multi-turn-conversation)** — you want to test more than one isolated task: an LLM plays the customer and holds a real back-and-forth conversation with your agent, which then gets scored as a whole.
 
 (For the pytest suite that tests *AgentFit itself*, see [TESTING.md](TESTING.md) — this doc is about testing an agent *under evaluation*.)
 
@@ -268,10 +269,65 @@ The same pattern works for Dify (`POST {base}/v1/chat-messages`, `Authorization:
 - **Needs real code** (custom auth flows, retries, streaming/SSE, response post-processing, or wrapping a framework SDK directly): use the `GenericAdapter` bridge pattern from [Part 3](#part-3--build--self-host-an-agent-for-free-then-test-it) — write a small async function that speaks the platform's API and returns a string or dict, and pass it as `agent_callable`.
 - **Want real tool execution measured, not just tool selection?** Subclass whichever adapter you're using and override `_execute_tool()` (`OpenAICompatibleAdapter`/`AnthropicAdapter`) to call your real tools instead of returning a mock ack — see the "Custom tool execution" section in the [README](../README.md#connecting-self-hosted--custom-llms).
 
+---
+
+## Part 5 — Loop testing: simulate a real multi-turn conversation
+
+Every mode above tests your agent against **one** fixed task per scenario. Real customer-service, support, and sales agents get used in a back-and-forth conversation, not one isolated request — a resolution often takes several turns, and an agent that nails a single question can still fail badly once a customer pushes back, changes their mind, or has to repeat themselves. **Loop testing** covers that: an LLM plays the customer (persona described in a markdown file you write), holds a genuine multi-turn conversation with your agent, stops itself once it's satisfied (or gives up), and the whole transcript gets scored by an LLM judge — against the same BNP dimensions (`task_competence`, `tool_use`, `safety_alignment`, ...) everything else in AgentFit uses, so governance/Pass@k/Pass^k all work unchanged.
+
+Works with **any adapter** — `openai_compatible`, `custom_http`, `generic`, `openai`, `anthropic` — loop testing only changes *how many turns* the evaluation runs, not which adapter is under test.
+
+### Write a persona file
+
+```markdown
+---
+opening_message: "Hi, I never received my order and it's been two weeks."
+max_turns: 15
+goal: "Get a full refund since the order never arrived."
+agent_speaks_first: false
+---
+You are Jordan, a mildly frustrated but reasonable customer. Your order
+never arrived. You want a refund. If the agent asks for an order number,
+make one up. Once the agent resolves it, thank them and end the conversation.
+```
+
+All frontmatter fields are optional:
+
+| Field | Purpose |
+|---|---|
+| `opening_message` | Fixed first customer message — used verbatim (no LLM call), so the conversation's opener is deterministic and reproducible. Omit it to let the persona LLM generate an opener in character. |
+| `max_turns` | Overrides `--loop-max-turns` for this persona specifically. |
+| `goal` | Injected into the persona LLM's instructions as an explicit objective — helps it know when to stop. |
+| `agent_speaks_first` | Set `true` if your agent should open with a greeting before the customer speaks (default: customer speaks first). |
+
+The body below the frontmatter is the actual persona instructions — write who this customer is and what they want, in plain English. AgentFit wraps it with its own instructions that make the LLM always reply in a small structured format (`{"message": ..., "done": bool}`), so the conversation has a reliable stop signal instead of AgentFit having to guess from free text when "no more progress" is being made.
+
+### Run it
+
+```bash
+agentfit evaluate \
+  --bnp examples/customer_service_bnp.md \
+  --output results.json \
+  --agent-adapter openai --agent-model gpt-4o --agent-api-key sk-... \
+  --enable-loop \
+  --loop-instructions persona.md \
+  --loop-max-turns 15 \
+  --loop-llm-provider openai --loop-llm-api-key sk-... \
+  --agent-trace-output trace.json
+```
+
+Notes:
+- `--loop-llm-provider`/`--loop-llm-api-key`/`--loop-llm-model`/`--loop-llm-base-url` configure the LLM that plays the customer **and** scores the finished transcript (same provider list as `--provider`/`--interpret`). Kept separate from `--interpret`'s flags since the two are unrelated: `--interpret` is an optional narrative layer explaining already-computed scores, `--enable-loop` changes how the evaluation itself is run.
+- `--loop-max-turns` (default 20) is a safety cap on customer↔agent exchanges — the persona's own `max_turns` frontmatter overrides it. Each turn is an LLM call, so cost scales with conversation length; the CLI echoes an estimated call count before running.
+- `--agent-trace-output` (defaults to `<output>.trace.json`) gets the full turn-by-turn transcript: every message, declared tool calls, observed environment events, per-turn latency, and the judge's final per-dimension verdicts — self-contained, so you don't need `results.json` open alongside it to see how a conversation was scored.
+- `--trials N` (k_trials) works as usual — each trial is one complete, independent simulated conversation from scratch, feeding the same Pass@k/Pass^k reliability statistics every other evaluation mode uses.
+- Tool calls are captured regardless of which key names your agent's platform uses internally (OpenAI's `function.name`/`function.arguments`, or flatter shapes like `name`/`args`) — see `agentfit/protocol/tool_call_normalizer.py`.
+
 ## Reference
 
 - CLI adapter flags: `agentfit evaluate --help` (see [agentfit/cli.py](../agentfit/cli.py))
 - Adapter implementations: [agentfit/adapters/](../agentfit/adapters/)
+- Loop-testing implementation: [agentfit/loop/](../agentfit/loop/)
 - Protocol details: [UNIVERSAL_AGENT_PROTOCOL.md](UNIVERSAL_AGENT_PROTOCOL.md)
 - Sim self-hosting docs: https://docs.sim.ai
 - Dify self-hosting docs: https://docs.dify.ai

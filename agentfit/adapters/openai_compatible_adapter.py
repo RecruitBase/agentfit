@@ -25,6 +25,13 @@ Usage:
         base_url="http://localhost:11434/v1",
         model="llama3",
     )
+
+Multi-turn conversations: pass execute_task(..., context={"conversation_history": [...]})
+with prior turns as {"role": "user"|"assistant", "content": str} dicts —
+they're prepended to the chat history sent to the model, so the agent sees
+the real conversation-so-far rather than starting fresh each call. Used by
+AgentFit's loop-testing mode (agentfit/loop/orchestrator.py) to hold a real
+multi-turn conversation instead of one isolated task per evaluation.
 """
 
 from typing import Any, Dict, List, Optional
@@ -167,10 +174,30 @@ class OpenAICompatibleAdapter(UniversalAgentProtocol):
         errors: List[str] = []
         final_output: Optional[str] = None
 
-        chat_history: List[Dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": task},
-        ]
+        # Multi-turn conversations (AgentFit's loop-testing mode) pass prior
+        # turns in via context["conversation_history"] — a list of
+        # {"role": "user"|"assistant", "content": str} dicts, oldest first.
+        # Splicing them in between the system prompt and the new task turns
+        # this from a fresh one-shot exchange into a real continuation of
+        # the conversation the model has already been part of. Empty/absent
+        # for a plain single-shot evaluation, which behaves exactly as before.
+        prior_history: List[Dict[str, Any]] = list((context or {}).get("conversation_history") or [])
+
+        chat_history: List[Dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
+        chat_history.extend(prior_history)
+        chat_history.append({"role": "user", "content": task})
+
+        # Mirror the prepended history into the UAP-level message log too,
+        # so ExecutionResult.messages reflects the whole conversation this
+        # turn was part of, not just the newest exchange.
+        for entry in prior_history:
+            try:
+                role = MessageRole(entry.get("role", "user"))
+            except ValueError:
+                # Unrecognized role string — default to USER rather than
+                # dropping the turn or raising.
+                role = MessageRole.USER
+            uap_messages.append(Message(role=role, content=entry.get("content", "")))
         uap_messages.append(Message(role=MessageRole.USER, content=task))
 
         openai_tools = [_tool_to_openai(t) for t in tools] if tools else None

@@ -72,10 +72,7 @@ pytest tests/ -v
 ### Create/update important files:
 
 1. **README.md** - Project overview (already created)
-2. **LICENSE** - Apache 2.0 license
-   ```bash
-   curl -o LICENSE https://www.apache.org/licenses/LICENSE-2.0.txt
-   ```
+2. **LICENSE** - Business Source License 1.1 (BUSL-1.1) - already present at the repo root; update the Change Date parameter if cutting a new major line
 3. **CHANGELOG.md** - Document version changes
 
 ### Verify pyproject.toml:

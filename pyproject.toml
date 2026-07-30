@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentfit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Universal agent evaluation framework with multi-provider support and 7 evaluation dimensions"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = {text = "BUSL-1.1"}
 
 authors = [
     {name = "Gabiro N. Arnauld", email = "gabiro@recruitbase.work"}
@@ -28,7 +28,7 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: Other/Proprietary License",
     "Natural Language :: English",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",

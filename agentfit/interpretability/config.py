@@ -48,8 +48,8 @@ class LLMProvider(str, Enum):
 # Default model per provider
 DEFAULT_MODELS: dict[LLMProvider, str] = {
     LLMProvider.OPENAI:             "gpt-4o-mini",
-    LLMProvider.ANTHROPIC:          "claude-sonnet-4-20250514",
-    LLMProvider.GOOGLE:             "gemini-2.0-flash",
+    LLMProvider.ANTHROPIC:          "claude-sonnet-5",
+    LLMProvider.GOOGLE:             "gemini-flash-latest",
     LLMProvider.MISTRAL:            "mistral-large-latest",
     LLMProvider.DEEPSEEK:           "deepseek-chat",
     LLMProvider.QWEN:               "qwen-plus",
